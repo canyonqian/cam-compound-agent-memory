@@ -1,19 +1,34 @@
-# Compound Wiki — Universal Agent Plugin Installation Guide
-# ===========================================================
-# Zero-config. Uses Host Agent's LLM. No separate API key needed.
+# Compound Wiki — Installation Guide
 
-## Quick Install (one command per platform)
+Zero-config. Uses Host Agent's LLM. No separate API key needed.
+
+---
+
+## 1. Prerequisites
+
+```bash
+# Python 3.10+ required
+pip install mcp[cli]
+pip install -r requirements.txt
+```
+
+Or install as a package (once published):
+
+```bash
+pip install compound-wiki
+```
+
+---
+
+## 2. Platform-Specific Setup
 
 ### Claude Desktop / Claude Code
 
-```bash
-pip install mcp[cli] compound-wiki
-```
-
-Then add to your MCP config:
+Add to your MCP config:
 
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+**Linux:** `~/.claude.json` (Claude Code)
 
 ```json
 {
@@ -21,7 +36,7 @@ Then add to your MCP config:
     "compound-wiki": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
-      "env": { "CW_PROJECT_DIR": "<your-wiki-path>" }
+      "env": { "CW_PROJECT_DIR": "/path/to/your/wiki" }
     }
   }
 }
@@ -29,7 +44,7 @@ Then add to your MCP config:
 
 ### Cursor
 
-Add to `.cursor/mcp.json` in your project:
+Add to `.cursor/mcp.json` in your project root:
 
 ```json
 {
@@ -77,28 +92,60 @@ Add to `.windsurf/mcp.json`:
 
 ### OpenClaw
 
-OpenClaw uses a webhook bridge pattern. Add to your OpenClaw agent config:
+OpenClaw uses a **native plugin system** (not MCP). Installation is a two-step process:
 
-```javascript
-// In your OpenClaw agent configuration:
-{
-  "hooks": {
-    "onResponse": {
-      "url": "http://localhost:9877/memory/hook",
-      "method": "POST"
-    }
-  },
-  // Or use MCP mode if OpenClaw supports it
-  "mcpServers": [{
-    "name": "compound-wiki",
-    "command": "python",
-    "args": ["-m", "plugins.mcp_server"]
-  }]
-}
+#### Step 1: Clone the repo and install dependencies
 
-// Alternative: Use the CLI bridge
-// python memory_core/examples/openclaw_integration.py
+```bash
+# Clone to a permanent location
+git clone https://github.com/canyonqian/compound-wiki.git ~/compound-wiki
+cd ~/compound-wiki
+pip install mcp[cli] -r requirements.txt
 ```
+
+#### Step 2: Register the plugin with OpenClaw
+
+```bash
+# Enable the plugin (OpenClaw CLI handles config registration)
+openclaw plugins enable compound-wiki --source path --source-path ~/compound-wiki/plugins/openclaw
+
+# Restart the gateway to apply
+openclaw gateway restart
+```
+
+#### Verify
+
+```bash
+openclaw plugins list | grep compound
+# Should show: │ Compound Wiki │ compound-wiki │ loaded │ ... │ 2.0.0 │
+```
+
+#### Plugin Configuration (optional)
+
+The plugin works out of the box with defaults. To customize, edit `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "compound-wiki": {
+        "enabled": true,
+        "config": {
+          "wikiPath": "/path/to/your/wiki",
+          "injectOnPrompt": true,
+          "extractOnOutput": true
+        }
+      }
+    }
+  }
+}
+```
+
+| Config Key | Default | Description |
+|------------|---------|-------------|
+| `wikiPath` | `~/compound-wiki` | Path to Compound Wiki project root |
+| `injectOnPrompt` | `true` | Auto-inject wiki context into system prompt |
+| `extractOnOutput` | `true` | Auto-extract knowledge from AI responses |
 
 ### Cody / JetBrains
 
@@ -120,16 +167,16 @@ Add to `.cody/mcp.json` or JetBrains MCP settings:
 
 ```bash
 # Start as stdio server (default)
-python plugins/mcp_server.py
+python -m plugins.mcp_server
 
 # Start as SSE server (for remote connections)
-python plugins/mcp_server.py sse
+python -m plugins.mcp_server sse
 # → Connect to http://localhost:8765/sse
 ```
 
 ---
 
-## How It Works (No API Key Needed!)
+## 3. How It Works (No API Key Needed!)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -160,7 +207,7 @@ python plugins/mcp_server.py sse
 
 ---
 
-## Available Tools After Installation
+## 4. Available Tools
 
 | Tool | What It Does |
 |------|-------------|
@@ -173,32 +220,7 @@ python plugins/mcp_server.py sse
 
 ---
 
-## Example Conversation (After Install)
-
-> **You:** Help me learn from this article about microservices architecture.
->
-> **Agent:** *[calls cw_ingest with article content]*  
-> **Plugin:** ✅ Content saved. Now extracting...  
-> **Agent:** *[reads extraction prompt, analyzes content with its own LLM]*  
-> **Agent:** *[calls cw_write_pages with extracted pages]*  
-> **Plugin:** 📝 Created: wiki/concept/microservices.md, wiki/concept/service-mesh.md...  
-> **Agent:** *[calls cw_update_index]*  
-> **Plugin:** 📑 Index updated. 3 new pages created.
->
-> **Agent:** I've learned about your microservices article. Key concepts saved:
-> - Microservices architecture patterns
-> - Service mesh fundamentals  
-> - API gateway design
-> 
-> **You:** What do you know about service mesh?
-> 
-> **Agent:** *[calls cw_query("service mesh")]*  
-> **Plugin:** Found 1 matching page...  
-> **Agent:** Based on the article you shared earlier, here's what's in your wiki about service mesh...
-
----
-
-## Troubleshooting
+## 5. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -206,6 +228,8 @@ python plugins/mcp_server.py sse
 | `CW_PROJECT_DIR` not set | Set env var or use default (plugin parent dir) |
 | Wiki directory empty after ingest | The Agent needs to follow the extraction prompt and call `cw_write_pages` |
 | Pages not linking correctly | Make sure Agent uses `[[]]` format for internal links |
+| **OpenClaw:** `source: Invalid input` | Must use `openclaw plugins enable` CLI, not manual config edit. Allowed sources: `npm`, `archive`, `path`, `clawhub`, `marketplace` |
+| **OpenClaw:** `plugin disabled (not in allowlist)` | Run `openclaw plugins enable compound-wiki --source path --source-path <path>` to register |
 
 ---
 

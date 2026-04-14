@@ -20,7 +20,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 // 配置
 // ============================================================
 
-const DEFAULT_WIKI_PATH = "/root/compound-wiki";
+const DEFAULT_WIKI_PATH = process.env.CW_PROJECT_DIR || process.cwd();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5分钟
 
 function resolveConfig(cfg: Record<string, unknown>): {
