@@ -1,15 +1,17 @@
 /**
- * CAM — OpenClaw Plugin v5 (Agent-Native Extraction)
+ * CAM — OpenClaw Plugin v5.1 (Agent-Native Extraction + Auto-Detect Files)
  *
  * 核心架构转变：不再由 daemon 调 LLM 提取知识，
  * 而是让 Agent 用自带的 LLM 提取知识，通过 tool 回传给 daemon 存储。
  *
- * 原因：Agent 本身就有强大的 LLM（Claude/GPT），无需额外配置 API key。
- * LCM 也不在 ingest 中调 LLM——它只存原始消息，压缩时才调。
+ * v5.1 新增：文件/图片自动检测
+ * - ingest() 自动检测消息中的附件（文件路径、图片、文档引用）
+ * - before_prompt_build 注入明确的文件处理指令
+ * - Agent 看到"你收到了文件"的提示后自动调用 cam_extract_file
  *
  * 三层机制：
  *   1️⃣ ContextEngine (框架自动调用，不受 activateGlobalSideEffects 限制)
- *      - ingest()    → 存原始对话到 daemon（不调 LLM）
+ *      - ingest()    → 存原始对话 + 检测文件/图片附件
  *      - assemble()  → 召回相关记忆注入 prompt（不调 LLM）
  *
  *   2️⃣ Tool (Agent 主动调用 — 核心！Agent 用自身 LLM 提取后回传)
@@ -18,10 +20,10 @@
  *      - cam_stats        → 统计面板
  *      - cam_extract_file → 文件/图片/文档提取 → 存入 wiki
  *
- *   3️⃣ Hook (补充 — 注入提取指令)
- *      - before_prompt_build → 注入记忆召回 + 提取指令（告诉 Agent 何时该用 cam_extract）
- *      - message_received    → 缓存用户消息
- *      - llm_output          → 检测文件讨论 → 自动补充存储
+ *   3️⃣ Hook (补充 — 注入提取指令 + 文件检测提示)
+ *      - before_prompt_build → 注入记忆召回 + 提取指令 + 文件处理提醒
+ *      - message_received    → 缓存用户消息 + 检测文件
+ *      - llm_output          → 日志
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -113,12 +115,129 @@ async function daemonGet(endpoint: string, params: Record<string, string> = {}):
 }
 
 // ============================================================
+// 文件/图片自动检测
+// ============================================================
+
+interface DetectedAttachment {
+  type: "file" | "image" | "document";
+  path?: string;
+  name?: string;
+  mimeType?: string;
+  description: string;
+}
+
+/**
+ * 从消息中检测文件/图片附件
+ * OpenClaw 的消息格式可能包含：
+ * - content 数组中的 image 类型块（图片）
+ * - content 数组中的 file/document 类型块（文件）
+ * - 文本中的文件路径引用
+ */
+function detectAttachments(message: any): DetectedAttachment[] {
+  const attachments: DetectedAttachment[] = [];
+  if (!message) return attachments;
+
+  const content = message.content;
+
+  // 1. 结构化消息格式（OpenClaw 多模态消息）
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+
+      // 图片块
+      if (block.type === "image" || block.type === "image_url") {
+        attachments.push({
+          type: "image",
+          mimeType: block.mimeType || block.image_url?.url?.match(/data:(image\/\w+)/)?.[1],
+          description: block.alt || block.caption || "User shared an image",
+        });
+      }
+      // 文件/文档块
+      if (block.type === "file" || block.type === "document" || block.type === "attachment") {
+        attachments.push({
+          type: "document",
+          path: block.path || block.url || block.name,
+          name: block.name || block.filename,
+          mimeType: block.mimeType || block.content_type,
+          description: `User shared a file: ${block.name || block.path || "document"}`,
+        });
+      }
+      // 文本中引用的文件路径
+      if (block.type === "text" && typeof block.text === "string") {
+        extractFilePaths(block.text, attachments);
+      }
+    }
+  }
+
+  // 2. 纯文本消息 — 检测文件路径引用
+  if (typeof content === "string") {
+    extractFilePaths(content, attachments);
+  }
+
+  // 3. 检查 attachments 字段（某些平台直接提供）
+  if (message.attachments && Array.isArray(message.attachments)) {
+    for (const att of message.attachments) {
+      const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp)/i.test(att.name || att.filename || "");
+      attachments.push({
+        type: isImage ? "image" : "file",
+        path: att.path || att.url,
+        name: att.name || att.filename,
+        mimeType: att.mimeType || att.content_type,
+        description: `User shared: ${att.name || att.filename || "attachment"}`,
+      });
+    }
+  }
+
+  // 4. 检查 files 字段
+  if (message.files && Array.isArray(message.files)) {
+    for (const f of message.files) {
+      const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp)/i.test(f.name || f.path || "");
+      attachments.push({
+        type: isImage ? "image" : "file",
+        path: f.path,
+        name: f.name,
+        mimeType: f.mimeType,
+        description: `User shared: ${f.name || f.path || "file"}`,
+      });
+    }
+  }
+
+  return attachments;
+}
+
+/** 从文本中提取看起来像文件路径的引用 */
+function extractFilePaths(text: string, attachments: DetectedAttachment[]) {
+  // 匹配常见文件路径模式
+  const filePathPattern = /(?:^|\s|[`'"])(\/[\w\-./]+\.\w{1,10}|[A-Z]:\\[\w\-./\\]+\.\w{1,10}|~\/[\w\-./]+\.\w{1,10}|\.\/[\w\-./]+\.\w{1,10})(?:[`'"\s,;)]|$)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = filePathPattern.exec(text)) !== null) {
+    const path = match[1];
+    if (!path) continue;
+    const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp)/i.test(path);
+    const isDoc = /\.(pdf|docx?|xlsx?|pptx?|md|txt|rst|html?|json|yaml|yml|toml|csv)/i.test(path);
+    if (isImage || isDoc) {
+      // 避免重复
+      if (!attachments.some(a => a.path === path)) {
+        attachments.push({
+          type: isImage ? "image" : "document",
+          path,
+          name: path.split(/[\/\\]/).pop() || path,
+          description: `File reference: ${path}`,
+        });
+      }
+    }
+  }
+}
+
+// ============================================================
 // ContextEngine 实现 — 存储层（框架自动调用，不调 LLM）
 // ============================================================
 
 class CamContextEngine implements ContextEngine {
   private config: ReturnType<typeof resolveConfig>;
   private lastQueryResult: string | null = null;
+  private recentAttachments: DetectedAttachment[] = [];
+  private recentAttachmentTs = 0;
 
   constructor(cfg: ReturnType<typeof resolveConfig>) {
     this.config = cfg;
@@ -126,8 +245,7 @@ class CamContextEngine implements ContextEngine {
 
   /**
    * ingest(): 框架在每条消息到达时自动调用
-   * 只存原始对话，不做 LLM 提取（跟 LCM 一样）
-   * 知识提取由 Agent 通过 cam_extract tool 主动完成
+   * 存原始对话 + 检测文件/图片附件
    */
   async ingest(params: {
     sessionId: string;
@@ -136,15 +254,30 @@ class CamContextEngine implements ContextEngine {
   }): Promise<IngestResult> {
     try {
       const content = this.extractTextContent(params.message);
-      if (!content || content.length < 5) return { ingested: false };
-
       const role = params.message?.role || "unknown";
 
+      // 检测文件/图片附件
+      const attachments = detectAttachments(params.message);
+      if (attachments.length > 0) {
+        this.recentAttachments = attachments;
+        this.recentAttachmentTs = Date.now();
+        console.log(`[cam-ingest] Detected ${attachments.length} attachment(s): ${attachments.map(a => a.description).join(", ")}`);
+      }
+
       // 只存原始对话，不调 LLM
+      if (!content || content.length < 5) {
+        // 即使没有文本内容，有附件也要存储
+        if (attachments.length === 0) return { ingested: false };
+      }
+
+      const attachmentNote = attachments.length > 0
+        ? `\n[Attachments: ${attachments.map(a => `${a.type}: ${a.name || a.path || "unknown"}`).join(", ")}]`
+        : "";
+
       const result = await daemonPost("/hook", {
-        user_message: role === "user" ? content : "",
+        user_message: role === "user" ? content + attachmentNote : "",
         ai_response: role === "assistant" ? content : "",
-        conversation: [{ role, content }],
+        conversation: [{ role, content: content + attachmentNote }],
         agent_id: "openclaw",
         session_id: params.sessionKey || params.sessionId || "",
       }, this.config.daemonUrl);
@@ -162,7 +295,6 @@ class CamContextEngine implements ContextEngine {
 
   /**
    * assemble(): 框架在构建 prompt 时自动调用 — 召回相关记忆
-   * 不调 LLM，只做 wiki 查询
    */
   async assemble(params: {
     sessionId: string;
@@ -198,6 +330,14 @@ class CamContextEngine implements ContextEngine {
 
   async compact(): Promise<any> {
     return { ok: true, compacted: false, reason: "CAM does not manage compaction" };
+  }
+
+  /** 获取最近检测到的附件（5分钟内有效） */
+  getRecentAttachments(): DetectedAttachment[] {
+    if (Date.now() - this.recentAttachmentTs > 5 * 60 * 1000) {
+      this.recentAttachments = [];
+    }
+    return this.recentAttachments;
   }
 
   private extractTextContent(message: any): string {
@@ -255,13 +395,6 @@ function jsonToolResult(data: Record<string, unknown>) {
  * cam_extract: 最核心的 tool！
  *
  * Agent 用自身 LLM 分析对话后，把提取到的知识通过此 tool 存入 wiki。
- * 这样 daemon 就走 Agent-Native 模式——直接存储，不需要额外 LLM。
- *
- * Agent 应该在以下情况调用此 tool：
- * - 用户表达了明确的偏好或决策
- * - 讨论中产生了重要的技术选型或架构决定
- * - 用户纠正了之前的错误信息
- * - 获取了值得跨会话记住的事实知识
  */
 function createCamExtractTool(daemonUrl: string) {
   return {
@@ -315,13 +448,12 @@ function createCamExtractTool(daemonUrl: string) {
 
       const context = String(params.context || "");
 
-      // 发送给 daemon，走 Agent-Native 模式（extracted_facts 已提供）
       const result = await daemonPost("/hook", {
         user_message: context || "Agent extracted knowledge",
         ai_response: "",
         agent_id: "openclaw-agent",
         session_id: process.env.OPENCLAW_SESSION_ID || "",
-        extracted_facts: facts,  // ← 这是关键！daemon 会走 Agent-Native 模式直接存储
+        extracted_facts: facts,
       }, daemonUrl);
 
       if (!result) {
@@ -446,7 +578,7 @@ function createCamExtractFileTool(daemonUrl: string) {
       properties: {
         file_path: {
           type: "string",
-          description: "Path of the file that was analyzed",
+          description: "Path or name of the file/image that was analyzed",
         },
         facts: {
           type: "array",
@@ -489,7 +621,6 @@ function createCamExtractFileTool(daemonUrl: string) {
         return jsonToolResult({ error: "facts array is required and must not be empty" });
       }
 
-      // 走 Agent-Native 模式
       const result = await daemonPost("/hook", {
         user_message: `File: ${filePath}${summary ? `\nSummary: ${summary}` : ""}`,
         ai_response: "",
@@ -528,51 +659,78 @@ function createCamExtractFileTool(daemonUrl: string) {
 
 let _cachedUserMsg = "";
 let _cachedUserTs = 0;
+let _cachedAttachments: DetectedAttachment[] = [];
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * before_prompt_build: 注入提取指令 + 文件处理提示
  *
- * 这是让 Agent "知道"它应该用 cam_extract 的关键！
- * 告诉 Agent：你在对话中识别到重要知识时，应该主动调用 cam_extract
+ * 关键改进：
+ * 1. 检测到文件/图片附件时，注入强烈的处理提示
+ * 2. 告诉 Agent "你收到了文件，请用 cam_extract_file 提取"
  */
 export function handleBeforePromptBuild(
   ctx: any & { config?: Record<string, unknown> },
+  engine: CamContextEngine,
 ): { prependSystemContext?: string } {
   const config = ctx.config ? resolveConfig(ctx.config) : resolveConfig({});
   if (!config.injectOnPrompt) return {};
 
+  const parts: string[] = [
+    "",
+    "<cam-instructions>",
+    "CAM (Compound Agent Memory) is active. You have access to long-term knowledge storage:",
+    "",
+    "## When to use cam_extract:",
+    "- The user expresses a clear **preference** (e.g., 'I prefer...', 'Always use...')",
+    "- A **decision** is made (e.g., 'We'll use React', 'Switched to PostgreSQL')",
+    "- The user **corrects** previous information",
+    "- Important **technical choices** or **architecture decisions** are discussed",
+    "- The user shares **personal context** they'd want remembered (name, role, project details)",
+    "- Any **factual knowledge** worth preserving across conversations",
+    "",
+    "## When to use cam_extract_file:",
+    "- The user shares a file, image, or document with important information",
+    "- Read/analyze it first with your LLM, then call cam_extract_file to store key facts",
+    "- This includes: code files, design docs, screenshots, PDFs, config files, etc.",
+    "",
+    "## When to use cam_query:",
+    "- You need to recall something from past conversations",
+    "- The user asks about previous decisions, preferences, or context",
+    "",
+    "IMPORTANT: Do NOT call cam_extract for every message — only when genuinely valuable knowledge is identified.",
+  ];
+
+  // 检测最近收到的文件/图片附件
+  const recentAtts = engine.getRecentAttachments();
+  if (recentAtts.length > 0) {
+    parts.push("");
+    parts.push("## ⚠️ FILE/IMAGE DETECTED — ACTION REQUIRED");
+    parts.push("");
+    parts.push("The user has shared the following file(s)/image(s) in this conversation:");
+    for (const att of recentAtts) {
+      const icon = att.type === "image" ? "🖼️" : "📄";
+      parts.push(`- ${icon} **${att.type}**: ${att.name || att.path || "unknown"} ${att.mimeType ? `(${att.mimeType})` : ""}`);
+    }
+    parts.push("");
+    parts.push("**You MUST:**");
+    parts.push("1. Read and analyze the file/image content with your LLM");
+    parts.push("2. Extract key facts, decisions, requirements, or knowledge from it");
+    parts.push("3. Call `cam_extract_file` with the extracted facts to store them in the knowledge base");
+    parts.push("");
+    parts.push("This ensures important information from shared files is preserved for future conversations.");
+  }
+
+  parts.push("</cam-instructions>");
+  parts.push("");
+
   return {
-    prependSystemContext: [
-      "",
-      "<cam-instructions>",
-      "CAM (Compound Agent Memory) is active. You have access to long-term knowledge storage:",
-      "",
-      "## When to use cam_extract:",
-      "- The user expresses a clear **preference** (e.g., 'I prefer...', 'Always use...')",
-      "- A **decision** is made (e.g., 'We'll use React', 'Switched to PostgreSQL')",
-      "- The user **corrects** previous information",
-      "- Important **technical choices** or **architecture decisions** are discussed",
-      "- The user shares **personal context** they'd want remembered (name, role, project details)",
-      "- Any **factual knowledge** worth preserving across conversations",
-      "",
-      "## When to use cam_extract_file:",
-      "- The user shares a file, image, or document with important information",
-      "- Read it first, extract key facts, then call cam_extract_file to store them",
-      "",
-      "## When to use cam_query:",
-      "- You need to recall something from past conversations",
-      "- The user asks about previous decisions, preferences, or context",
-      "",
-      "IMPORTANT: Do NOT call cam_extract for every message — only when genuinely valuable knowledge is identified.",
-      "</cam-instructions>",
-      "",
-    ].join("\n"),
+    prependSystemContext: parts.join("\n"),
   };
 }
 
-/** message_received: 缓存用户消息 */
-export function handleMessageReceived(ctx: any): void {
+/** message_received: 缓存用户消息 + 检测文件 */
+export function handleMessageReceived(ctx: any, engine: CamContextEngine): void {
   const msg =
     ctx.userMessage ||
     ctx.bodyForAgent ||
@@ -583,14 +741,21 @@ export function handleMessageReceived(ctx: any): void {
     _cachedUserMsg = msg;
     _cachedUserTs = Date.now();
   }
+
+  // 检测文件/图片附件
+  const event = ctx.event || ctx;
+  const attachments = detectAttachments(event);
+  if (attachments.length > 0) {
+    _cachedAttachments = attachments;
+    _cachedUserTs = Date.now();
+    console.log(`[cam-msg] Detected ${attachments.length} attachment(s) in message_received`);
+  }
 }
 
-/** llm_output: 检测文件讨论 → 提醒 Agent 使用 cam_extract_file */
+/** llm_output: 日志 */
 export async function handleLlmOutput(
   ctx: any & { config?: Record<string, unknown>; aiResponse?: string },
 ): Promise<void> {
-  // v5 中不再自动存储——由 Agent 主动通过 tool 完成
-  // 这里只做日志记录
   try {
     const config = ctx.config ? resolveConfig(ctx.config) : resolveConfig({});
     if (!config.extractOnOutput) return;
@@ -598,7 +763,6 @@ export async function handleLlmOutput(
     const aiResponse = ctx.aiResponse || ctx.lastAssistant || "";
     if (!aiResponse || aiResponse.length < 20) return;
 
-    // 检测是否涉及文件，只打日志
     const fileIndicators = /\.(ts|js|py|json|yaml|yml|md|txt|pdf|png|jpg|jpeg)[`'\"\s]/i;
     if (fileIndicators.test(aiResponse)) {
       console.log("[cam-output] File discussion detected — Agent should use cam_extract_file");
@@ -617,7 +781,7 @@ function getCachedUserMsg(): string {
 
 const camPlugin = {
   id: "cam",
-  version: "5.0.0",
+  version: "5.1.0",
 
   resolveConfig(env: Record<string, string>, value: Record<string, unknown>): Record<string, unknown> {
     const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -640,20 +804,21 @@ const camPlugin = {
     api.registerTool(() => createCamStatsTool());
     api.registerTool(() => createCamExtractFileTool(config.daemonUrl));
 
-    // ── Layer 3: Hooks (补充 — 注入提取指令) ──
+    // ── Layer 3: Hooks (补充 — 注入提取指令 + 文件检测提示) ──
     api.on("before_prompt_build", () =>
-      handleBeforePromptBuild(config as any),
+      handleBeforePromptBuild(config as any, engine),
     );
     api.on("message_received", (event: any) => {
-      handleMessageReceived(event);
+      handleMessageReceived(event, engine);
     });
     api.on("llm_output", (event: any) => {
       handleLlmOutput(event);
     });
 
-    console.log(`[cam] Plugin v5 loaded (Agent-Native Extraction)`);
+    console.log(`[cam] Plugin v5.1 loaded (Agent-Native + Auto-Detect Files)`);
     console.log(`[cam] daemon=${config.daemonUrl}`);
     console.log(`[cam] Agent extracts knowledge → cam_extract stores it (no external LLM needed)`);
+    console.log(`[cam] Auto-detect: files/images/docs → prompt Agent to use cam_extract_file`);
   },
 };
 
