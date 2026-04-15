@@ -229,10 +229,12 @@ class CamEngine:
     def deduplicator(self):
         if self._deduplicator is None:
             from memory_core.deduplicator import Deduplicator
-            self._deduplicator = Deduplicator(
-                wiki_index=self.wiki,
-                threshold=self.config.dedup_similarity_threshold,
-            )
+            from memory_core.config import MemoryConfig, DEFAULT_CONFIG
+            # Build config with correct dedup threshold
+            cfg = DEFAULT_CONFIG
+            if hasattr(cfg, 'deduplication') and hasattr(cfg.deduplication, 'near_duplicate_threshold'):
+                cfg.deduplication.near_duplicate_threshold = self.config.dedup_similarity_threshold
+            self._deduplicator = Deduplicator(config=cfg, wiki_index=self.wiki)
         return self._deduplicator
 
     async def on_conversation_turn(self, req: HookRequest) -> HookResult:
