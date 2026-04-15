@@ -1,5 +1,5 @@
 /**
- * Compound Wiki — Simplified Readability
+ * CAM — Simplified Readability
  * ========================================
  * 
  * A lightweight, dependency-free implementation inspired by Mozilla's Readability.

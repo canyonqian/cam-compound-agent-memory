@@ -1,11 +1,11 @@
 /**
- * Compound Wiki — Background Service Worker
+ * CAM — Background Service Worker
  * ===========================================
  * 
  * Manifest V3 background script. Handles:
  * 1. Receiving auto-capture data from content scripts
  * 2. Processing and enriching captured content
- * 3. Sending to Compound Wiki backend (auto-clip endpoint)
+ * 3. Sending to CAM backend (auto-clip endpoint)
  * 4. Managing capture queue and retry logic
  * 5. Context menu integration ("Save to Wiki")
  * 6. Badge count showing captures today
@@ -61,7 +61,7 @@ const state = {
 // ============================================================
 
 chrome.runtime.onInstalled.addListener(async () => {
-    console.log('[CompoundWiki] Extension installed');
+    console.log('[CAM] Extension installed');
     
     // Load settings from storage
     await loadSettings();
@@ -104,13 +104,13 @@ function setupContextMenu() {
     try {
         chrome.contextMenus.create({
             id: 'cw-save-page',
-            title: '🧠 Save to Compound Wiki',
+            title: '🧠 Save to CAM',
             contexts: ['page', 'selection'],
         });
         
         chrome.contextMenus.create({
             id: 'cw-save-link',
-            title: '🧠 Save link to Compound Wiki',
+            title: '🧠 Save link to CAM',
             contexts: ['link'],
         });
         
@@ -251,7 +251,7 @@ async function handleAutoCapture(captureData, tab) {
         const result = await sendToBackend(captureData);
         return { ok: true, result };
     } catch(e) {
-        console.error('[CompoundWiki] Backend unavailable, queuing:', e.message);
+        console.error('[CAM] Backend unavailable, queuing:', e.message);
         addToQueue(captureData);
         scheduleRetry(captureData);
         return { queued: true, reason: 'backend_unavailable' };
@@ -283,7 +283,7 @@ function enrichCaptureData(data, tab) {
 // ============================================================
 
 /**
- * Send captured content to Compound Wiki backend
+ * Send captured content to CAM backend
  */
 async function sendToBackend(captureData) {
     const url = `${state.settings.serverUrl}/auto-clip`;
@@ -292,7 +292,7 @@ async function sendToBackend(captureData) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-Source': 'compound-wiki-extension',
+            'X-Source': 'cam-extension',
             'X-Version': chrome.runtime.getManifest().version,
         },
         body: JSON.stringify(captureData),
@@ -334,7 +334,7 @@ async function saveViaAPI(url, selectedText, title, source) {
         state.todayCaptures.push(Date.now());
         updateBadge();
     } catch(e) {
-        console.error('[CompoundWiki] API fallback failed:', e.message);
+        console.error('[CAM] API fallback failed:', e.message);
     }
 }
 
@@ -361,7 +361,7 @@ async function processQueue() {
             if (entry.attempts >= state.settings.retryAttempts) {
                 state.queue.shift();
                 state.failedCaptures++;
-                console.error('[CompoundWiki] Gave up after retries:', entry.item.title);
+                console.error('[CAM] Gave up after retries:', entry.item.title);
             } else {
                 break; // Wait for retry timer
             }
@@ -483,4 +483,4 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-console.log('[CompoundWiki] Background service worker loaded');
+console.log('[CAM] Background service worker loaded');

@@ -22,7 +22,7 @@ Installation:
   Add to your MCP configuration (e.g., claude_desktop_config.json):
   {
     "mcpServers": {
-      "compound-wiki": {
+      "cam-memory": {
         "command": "python",
         "args": ["-m", "memory_core.mcp_server"],
         "env": {
@@ -492,7 +492,7 @@ async def run_mcp_server_stdio():
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
                         "serverInfo": {
-                            "name": "compound-wiki-memory-core",
+                            "name": "cam-memory-core",
                             "version": "2.0.0",
                         },
                     },

@@ -2,15 +2,16 @@
 Obsidian Adapter Plugin
 ========================
 
-Sync Compound Wiki content to/from an Obsidian vault.
+Sync CAM content to/from an Obsidian vault.
 
 How it works:
   • wiki/ directory IS an Obsidian-compatible vault
   • All [[wiki-links]] are native Obsidian links
-  • Open the compound-wiki folder as an Obsidian vault
+  • Open the cam folder as an Obsidian vault
   • Get graph view, backlinks, search, plugins — for free!
 
-Features:
+Usage:
+    adapter = ObsidianAdapter({"vault_path": "/path/to/cam"})
   ✅ Bidirectional sync (optional)
   ✅ Auto-generate .obsidian config on first run
   ✅ Graph view with all Wiki pages connected
@@ -18,7 +19,7 @@ Features:
   ✅ Community plugins work normally
 
 Usage:
-    adapter = ObsidianAdapter({"vault_path": "/path/to/compound-wiki"})
+    adapter = ObsidianAdapter({"vault_path": "/path/to/cam"})
     await adapter.sync_all(Path("wiki"))
     
     # Or simply: Open cam/ in Obsidian!
@@ -39,7 +40,7 @@ class ObsidianAdapter(BaseAdapter):
     """
     Obsidian vault synchronization adapter.
     
-    Since Compound Wiki uses Markdown + [[]] links natively,
+    Since CAM uses Markdown + [[]] links natively,
     it's already Obsidian-compatible! This adapter:
     
     1. Generates .obsidian/ config if missing
@@ -136,17 +137,17 @@ class ObsidianAdapter(BaseAdapter):
 
 def setup_obsidian_vault(project_dir: str):
     """
-    One-time setup to make Compound Wiki work as an Obsidian vault.
+    One-time setup to make CAM work as an Obsidian vault.
     
     Just call this once after creating your wiki. Then open in Obsidian.
     
     Args:
-        project_dir: Path to the compound-wiki project root
+        project_dir: Path to the CAM project root
         
     Example:
         from plugins.adapters.obsidian import setup_obsidian_vault
         
-        setup_obsidian_vault("/path/to/compound-wiki")
+        setup_obsidian_vault("/path/to/cam")
         print("Done! Now open in Obsidian.")
     """
     async def do_setup():

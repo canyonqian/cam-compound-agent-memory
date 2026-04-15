@@ -37,7 +37,7 @@ Integration patterns:
   ---------------------------------------------------------
   # Add to your MCP config:
   {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "memory_core.mcp_server"]
     }

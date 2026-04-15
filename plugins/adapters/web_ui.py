@@ -65,7 +65,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🧠 Compound Wiki Dashboard</title>
+<title>🧠 CAM Dashboard</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; 
@@ -109,7 +109,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 </head>
 <body>
 <div class="header">
-<h1>🧠 Compound Wiki</h1><p>Your AI-powered knowledge base — visualized</p>
+<h1>🧠 CAM</h1><p>Your AI-powered knowledge base — visualized</p>
 <div style="margin-top:15px"><input class="search" type="text" id="search" placeholder="🔍 Search knowledge base..." style="max-width:500px"></div>
 </div>
 <div class="container">
@@ -144,7 +144,7 @@ align-items:center;justify-content:center;color:#484f58;">
 </div>
 <script>
 // Dashboard will be populated by server-side rendering or API calls
-console.log('Compound Wiki Dashboard loaded');
+console.log('CAM Dashboard loaded');
 </script>
 </body></html>"""
 

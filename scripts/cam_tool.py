@@ -160,7 +160,7 @@ def cmd_lint(wiki_root=None):
     root = wiki_root or find_wiki_root()
     if not root:
         print(f"{Colors.RED}❌ 错误: 未找到 CAM 项目根目录{Colors.END}")
-        print("请在 compound-wiki 项目目录内运行此命令，或指定路径: python cam_tool.py lint <路径>")
+        print("请在 CAM 项目目录内运行此命令，或指定路径: python cam_tool.py lint <路径>")
         sys.exit(1)
 
     print(f"{Colors.BOLD}🔍 CAM LINT 检查{Colors.END}")

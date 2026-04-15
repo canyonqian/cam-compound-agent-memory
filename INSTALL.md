@@ -33,7 +33,7 @@ Add to your MCP config:
 ```json
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
       "env": { "CAM_PROJECT_DIR": "/path/to/your/wiki" }
@@ -49,7 +49,7 @@ Add to `.cursor/mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
       "env": { "CAM_PROJECT_DIR": "${workspaceFolder}" }
@@ -65,7 +65,7 @@ Add to `.vscode/mcp.json` or VS Code settings:
 ```json
 {
   "github.copilot.mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
       "env": { "CAM_PROJECT_DIR": "${workspaceFolder}" }
@@ -81,7 +81,7 @@ Add to `.windsurf/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
       "env": { "CAM_PROJECT_DIR": "${workspaceFolder}" }
@@ -98,7 +98,7 @@ OpenClaw uses a **native plugin system** (not MCP). Installation is a two-step p
 
 ```bash
 # Clone to a permanent location
-git clone https://github.com/canyonqian/cam.git ~/cam
+git clone https://github.com/canyonqian/cam-compound-agent-memory.git ~/cam
 cd ~/cam
 pip install mcp[cli] -r requirements.txt
 ```
@@ -107,7 +107,7 @@ pip install mcp[cli] -r requirements.txt
 
 ```bash
 # Enable the plugin (OpenClaw CLI handles config registration)
-openclaw plugins enable compound-wiki --source path --source-path ~/cam/plugins/openclaw
+openclaw plugins enable cam --source path --source-path ~/cam/plugins/openclaw
 
 # Restart the gateway to apply
 openclaw gateway restart
@@ -116,8 +116,8 @@ openclaw gateway restart
 #### Verify
 
 ```bash
-openclaw plugins list | grep compound
-# Should show: │ CAM │ cam │ loaded │ ... │ 2.0.0 │
+openclaw plugins list | grep cam
+# Should show: │ CAM │ cam │ loaded │ ... │ 3.0.0 │
 ```
 
 #### Plugin Configuration (optional)
@@ -128,7 +128,7 @@ The plugin works out of the box with defaults. To customize, edit `~/.openclaw/o
 {
   "plugins": {
     "entries": {
-      "compound-wiki": {
+      "cam": {
         "enabled": true,
         "config": {
           "wikiPath": "/path/to/your/wiki",
@@ -154,7 +154,7 @@ Add to `.cody/mcp.json` or JetBrains MCP settings:
 ```json
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "plugins.mcp_server"],
       "env": { "CAM_PROJECT_DIR": "${projectRoot}" }
@@ -185,17 +185,17 @@ python -m plugins.mcp_server sse
 │                                                      │
 │  User: "Read this article about RAG"                │
 │       ↓                                             │
-│  Agent calls: cw_ingest(content="...")              │
+│  Agent calls: cam_ingest(content="...")             │
 │       ↓                                             │
 │  ┌─────────────────────────────────┐               │
-│  │   CAM MCP Server v2   │               │
+│  │   CAM MCP Server               │               │
 │  │                                 │               │
 │  │  1. Saves content → raw/        │               │
 │  │  2. Returns EXTRACTION PROMPT   │ ← No API call! │
 │  │  ─────────────────────────────  │               │
 │  │  3. Agent uses ITS OWN brain     │               │
 │  │     to extract knowledge         │               │
-│  │  4. Agent calls cw_write_pages() │               │
+│  │  4. Agent calls cam_write_pages()│              │
 │  │  5. Wiki updated! ✅             │               │
 │  └─────────────────────────────────┘               │
 │                                                      │
@@ -211,12 +211,12 @@ python -m plugins.mcp_server sse
 
 | Tool | What It Does |
 |------|-------------|
-| `cw_ingest` | Learn from any content (articles, notes, code, conversations) |
-| `cw_write_pages` | Save extracted wiki pages to the knowledge base |
-| `cw_update_index` | Refresh the global wiki index |
-| `cw_query` | Search and retrieve stored knowledge |
-| `cw_stats` | View wiki statistics and health score |
-| `cw_lint` | Run quality check on the entire wiki |
+| `cam_ingest` | Learn from any content (articles, notes, code, conversations) |
+| `cam_write_pages` | Save extracted wiki pages to the knowledge base |
+| `cam_update_index` | Refresh the global wiki index |
+| `cam_query` | Search and retrieve stored knowledge |
+| `cam_stats` | View wiki statistics and health score |
+| `cam_lint` | Run quality check on the entire wiki |
 
 ---
 
@@ -229,8 +229,8 @@ python -m plugins.mcp_server sse
 | Wiki directory empty after ingest | The Agent needs to follow the extraction prompt and call `cam_write_pages` |
 | Pages not linking correctly | Make sure Agent uses `[[]]` format for internal links |
 | **OpenClaw:** `source: Invalid input` | Must use `openclaw plugins enable` CLI, not manual config edit. Allowed sources: `npm`, `archive`, `path`, `clawhub`, `marketplace` |
-| **OpenClaw:** `plugin disabled (not in allowlist)` | Run `openclaw plugins enable compound-wiki --source path --source-path <path>` to register |
+| **OpenClaw:** `plugin disabled (not in allowlist)` | Run `openclaw plugins enable cam --source path --source-path <path>` to register |
 
 ---
 
-*CAM v2 — Universal AI Memory Plugin*
+*CAM v3 — Universal AI Memory Plugin*

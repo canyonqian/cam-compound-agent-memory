@@ -34,7 +34,7 @@ class LogseqAdapter(BaseAdapter):
             
             # Convert [[]] to Logseq [[page]] format (already compatible)
             # Add Logseq frontmatter
-            logseq_content = f"- Compound Wiki page\n- tags: [[wiki]]\n\n{content}"
+            logseq_content = f"- CAM page\n- tags: [[wiki]]\n\n{content}"
             
             out_path = logseq_dir / md_file.relative_to(wiki_dir)
             out_path.parent.mkdir(parents=True, exist_ok=True)

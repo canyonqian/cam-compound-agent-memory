@@ -60,7 +60,7 @@ def call_openclaw_raw(message: str, session_id: str) -> str:
 
 async def main():
     print("=" * 70)
-    print("  OpenClaw + Compound Wiki  —  End-to-End Integration Test")
+    print("  OpenClaw + CAM  —  End-to-End Integration Test")
     print("=" * 70)
     
     # === Step 1: Init MemoryCore ===

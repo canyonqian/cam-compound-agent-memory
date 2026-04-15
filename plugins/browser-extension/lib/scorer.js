@@ -1,5 +1,5 @@
 /**
- * Compound Wiki — Value Scoring Engine
+ * CAM — Value Scoring Engine
  * =====================================
  * 
  * Multi-dimensional content value scoring system.

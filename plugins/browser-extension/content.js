@@ -1,5 +1,5 @@
 /**
- * Compound Wiki — Content Script
+ * CAM — Content Script
  * =================================
  * 
  * Injected into every page. Runs silently in background:
@@ -168,7 +168,7 @@
         // Listen for messages from popup/background
         chrome.runtime.onMessage.addListener(onMessage);
         
-        console.log('[CompoundWiki] Smart capture activated for:', window.location.href);
+        console.log('[CAM] Smart capture activated for:', window.location.href);
     }
 
     function shouldSkipPage() {
@@ -287,7 +287,7 @@
             });
             
         } catch(e) {
-            console.error('[CompoundWiki] Analysis error:', e);
+            console.error('[CAM] Analysis error:', e);
         } finally {
             state.isAnalyzing = false;
         }
@@ -745,10 +745,10 @@
                 showNotification(payload.title, scoreResult.totalScore, trigger);
             }
             
-            console.log(`[CompoundWiki] ✅ Auto-captured (${trigger}, score=${scoreResult.totalScore}):`, payload.title);
+            console.log(`[CAM] ✅ Auto-captured (${trigger}, score=${scoreResult.totalScore}):`, payload.title);
             
         } catch(e) {
-            console.error('[CompoundWiki] Capture failed:', e);
+            console.error('[CAM] Capture failed:', e);
             state.hasCaptured = false; // Allow retry
         }
     }
@@ -909,7 +909,7 @@
         toast.innerHTML = `
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
                 <span style="font-size:18px">🧠</span>
-                <span style="font-weight:600;font-size:14px">已存入 Compound Wiki</span>
+                <span style="font-weight:600;font-size:14px">已存入 CAM</span>
                 <span style="margin-left:auto;background:#22c55e;color:white;font-size:11px;
                        font-weight:700;padding:2px 8px;border-radius:99px">${score}分</span>
             </div>

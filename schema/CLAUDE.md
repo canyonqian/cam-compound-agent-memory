@@ -491,7 +491,7 @@ raw/ 新文件 → Watcher 检测 → Pipeline.run()
 // Claude Code / Cursor 配置文件
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["plugins/mcp_server.py"],
       "env": { "CAM_PROJECT_DIR": "${workspaceFolder}" }
@@ -707,7 +707,7 @@ while True:
 ```json
 {
   "mcpServers": {
-    "compound-wiki": {
+    "cam-memory": {
       "command": "python",
       "args": ["-m", "memory_core.mcp_server"],
       "env": { "WIKI_PATH": "./wiki" }

@@ -1,5 +1,5 @@
 /**
- * Compound Wiki — Popup Script
+ * CAM — Popup Script
  * ==============================
  * 
  * Popup UI logic. Shows:
