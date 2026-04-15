@@ -1,22 +1,27 @@
 /**
- * CAM — OpenClaw Plugin v4 (ContextEngine + Tool + Hook Hybrid)
+ * CAM — OpenClaw Plugin v5 (Agent-Native Extraction)
  *
- * 架构升级：从纯 hook 模式改为 LCM 同款 ContextEngine 一等公民模式
+ * 核心架构转变：不再由 daemon 调 LLM 提取知识，
+ * 而是让 Agent 用自带的 LLM 提取知识，通过 tool 回传给 daemon 存储。
+ *
+ * 原因：Agent 本身就有强大的 LLM（Claude/GPT），无需额外配置 API key。
+ * LCM 也不在 ingest 中调 LLM——它只存原始消息，压缩时才调。
  *
  * 三层机制：
  *   1️⃣ ContextEngine (框架自动调用，不受 activateGlobalSideEffects 限制)
- *      - ingest()    → 每条消息自动存入 wiki（框架在消息到达时自动调用）
- *      - assemble()  → 构建 prompt 时召回相关记忆注入上下文
+ *      - ingest()    → 存原始对话到 daemon（不调 LLM）
+ *      - assemble()  → 召回相关记忆注入 prompt（不调 LLM）
  *
- *   2️⃣ Tool (Agent 主动调用)
- *      - cam_query       → 查询知识库
+ *   2️⃣ Tool (Agent 主动调用 — 核心！Agent 用自身 LLM 提取后回传)
+ *      - cam_extract      → Agent 提取的知识存入 wiki（最核心！）
+ *      - cam_query        → 查询知识库
  *      - cam_stats        → 统计面板
- *      - cam_ingest       → 手动摄入内容
- *      - cam_extract_file → 文件/图片/文档 → LLM提取 → 存入wiki
+ *      - cam_extract_file → 文件/图片/文档提取 → 存入 wiki
  *
- *   3️⃣ Hook (补充)
- *      - before_prompt_build → 注入记忆召回结果 + 文件处理指令
- *      - llm_output          → 检测文件/图片处理结果 → 自动提取存入wiki
+ *   3️⃣ Hook (补充 — 注入提取指令)
+ *      - before_prompt_build → 注入记忆召回 + 提取指令（告诉 Agent 何时该用 cam_extract）
+ *      - message_received    → 缓存用户消息
+ *      - llm_output          → 检测文件讨论 → 自动补充存储
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -31,7 +36,7 @@ import type {
 // ============================================================
 
 const DAEMON_URL = process.env.CAM_DAEMON_URL || "http://127.0.0.1:9877";
-const DAEMON_TIMEOUT_MS = 10000; // 10s timeout for daemon calls
+const DAEMON_TIMEOUT_MS = 10000;
 
 function resolveConfig(cfg: Record<string, unknown>) {
   return {
@@ -75,7 +80,6 @@ async function daemonPost(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DAEMON_TIMEOUT_MS);
-
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -83,14 +87,12 @@ async function daemonPost(
       signal: controller.signal,
     });
     clearTimeout(timer);
-
     if (!res.ok) {
       console.log(`[cam] ${endpoint}: daemon returned ${res.status}`);
       return null;
     }
     return (await res.json()) as DaemonResponse;
   } catch (_) {
-    // Daemon offline — silently skip
     return null;
   }
 }
@@ -111,7 +113,7 @@ async function daemonGet(endpoint: string, params: Record<string, string> = {}):
 }
 
 // ============================================================
-// ContextEngine 实现 — 核心层（框架自动调用）
+// ContextEngine 实现 — 存储层（框架自动调用，不调 LLM）
 // ============================================================
 
 class CamContextEngine implements ContextEngine {
@@ -122,11 +124,15 @@ class CamContextEngine implements ContextEngine {
     this.config = cfg;
   }
 
-  /** OpenClaw 框架在每条消息到达时自动调用 */
+  /**
+   * ingest(): 框架在每条消息到达时自动调用
+   * 只存原始对话，不做 LLM 提取（跟 LCM 一样）
+   * 知识提取由 Agent 通过 cam_extract tool 主动完成
+   */
   async ingest(params: {
     sessionId: string;
     sessionKey?: string;
-    message: any; // AgentMessage — role + content array
+    message: any;
   }): Promise<IngestResult> {
     try {
       const content = this.extractTextContent(params.message);
@@ -134,6 +140,7 @@ class CamContextEngine implements ContextEngine {
 
       const role = params.message?.role || "unknown";
 
+      // 只存原始对话，不调 LLM
       const result = await daemonPost("/hook", {
         user_message: role === "user" ? content : "",
         ai_response: role === "assistant" ? content : "",
@@ -143,7 +150,7 @@ class CamContextEngine implements ContextEngine {
       }, this.config.daemonUrl);
 
       if (result?.facts_written && result.facts_written > 0) {
-        console.log(`[cam-ingest] 🧠 ${result.facts_written} fact(s) stored (${role})`);
+        console.log(`[cam-ingest] stored ${role} message (${content.length} chars)`);
       }
 
       return { ingested: !!result };
@@ -153,7 +160,10 @@ class CamContextEngine implements ContextEngine {
     }
   }
 
-  /** OpenClaw 框架在构建 prompt 时自动调用 — 召回相关记忆 */
+  /**
+   * assemble(): 框架在构建 prompt 时自动调用 — 召回相关记忆
+   * 不调 LLM，只做 wiki 查询
+   */
   async assemble(params: {
     sessionId: string;
     sessionKey?: string;
@@ -162,7 +172,6 @@ class CamContextEngine implements ContextEngine {
     tokenBudget?: number;
   }): Promise<AssembleResult> {
     try {
-      // 用当前用户 prompt 查询相关记忆
       const query = params.prompt || "";
       if (!query || query.length < 3 || !this.config.injectOnPrompt) {
         return { messages: [], estimatedTokens: 0 };
@@ -173,10 +182,7 @@ class CamContextEngine implements ContextEngine {
         return { messages: [], estimatedTokens: 0 };
       }
 
-      // 缓存结果供 hook 使用
       this.lastQueryResult = this.formatMatches(result.matches);
-
-      // 返回系统提示追加（注入到 prompt 中）
       const contextBlock = this.formatMatchesForPrompt(result.matches, query);
 
       return {
@@ -190,12 +196,10 @@ class CamContextEngine implements ContextEngine {
     }
   }
 
-  /** compact 不需要实现 — CAM 不做上下文压缩 */
   async compact(): Promise<any> {
     return { ok: true, compacted: false, reason: "CAM does not manage compaction" };
   }
 
-  /** 辅助：从 AgentMessage 提取文本内容 */
   private extractTextContent(message: any): string {
     if (!message) return "";
     if (typeof message.content === "string") return message.content;
@@ -208,17 +212,11 @@ class CamContextEngine implements ContextEngine {
     return String(message.content || "");
   }
 
-  /** 格式化匹配结果为 Markdown */
   private formatMatches(matches: DaemonResponse["matches"]): string {
     if (!matches) return "";
-    const lines: string[] = [];
-    for (const m of matches!) {
-      lines.push(`- **[${m.name}]** (${m.page}): ${m.preview || m.content_snippet?.slice(0, 150)}`);
-    }
-    return lines.join("\n");
+    return matches!.map(m => `- **[${m.name}]** (${m.page}): ${m.preview || m.content_snippet?.slice(0, 150)}`).join("\n");
   }
 
-  /** 格式化匹配结果用于 prompt 注入 */
   private formatMatchesForPrompt(matches: DaemonResponse["matches"], query: string): string {
     const parts: string[] = [
       "",
@@ -234,15 +232,118 @@ class CamContextEngine implements ContextEngine {
     return parts.join("\n");
   }
 
-  /** 获取最后一次查询结果（供 Tool 使用） */
   getLastRecall(): string | null {
     return this.lastQueryResult;
   }
 }
 
 // ============================================================
-// Tool 定义 — Agent 主动调用
+// Tool 定义 — Agent 主动调用（核心！）
 // ============================================================
+
+/** Helper: format tool output */
+function jsonToolResult(data: Record<string, unknown>) {
+  return {
+    content: data.content
+      ? [{ type: "text" as const, text: String(data.content) }]
+      : [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    details: data,
+  };
+}
+
+/**
+ * cam_extract: 最核心的 tool！
+ *
+ * Agent 用自身 LLM 分析对话后，把提取到的知识通过此 tool 存入 wiki。
+ * 这样 daemon 就走 Agent-Native 模式——直接存储，不需要额外 LLM。
+ *
+ * Agent 应该在以下情况调用此 tool：
+ * - 用户表达了明确的偏好或决策
+ * - 讨论中产生了重要的技术选型或架构决定
+ * - 用户纠正了之前的错误信息
+ * - 获取了值得跨会话记住的事实知识
+ */
+function createCamExtractTool(daemonUrl: string) {
+  return {
+    name: "cam_extract",
+    label: "CAM Extract",
+    description:
+      "Store extracted knowledge into the CAM Wiki knowledge base. " +
+      "Use this tool when you identify important information in the conversation that should be remembered " +
+      "across sessions — such as user preferences, decisions, technical choices, corrections, " +
+      "architecture decisions, or any factual knowledge worth preserving. " +
+      "YOU (the Agent) do the extraction using your own LLM capabilities, then pass the structured facts here.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        facts: {
+          type: "array",
+          description: "Array of facts to store. Each fact should have content and optionally a type.",
+          items: {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "The fact/knowledge to store (clear, concise, self-contained)",
+              },
+              fact_type: {
+                type: "string",
+                description: "Type: 'entity' (person/project/tool), 'concept' (idea/pattern), 'synthesis' (decision/summary), or 'fact' (general)",
+                enum: ["entity", "concept", "synthesis", "fact"],
+              },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "Tags for categorization",
+              },
+            },
+            required: ["content"],
+          },
+        },
+        context: {
+          type: "string",
+          description: "Brief context about what was being discussed when these facts were extracted",
+        },
+      },
+      required: ["facts"],
+    },
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+      const facts = params.facts as Array<Record<string, unknown>>;
+      if (!facts || !Array.isArray(facts) || facts.length === 0) {
+        return jsonToolResult({ error: "facts array is required and must not be empty" });
+      }
+
+      const context = String(params.context || "");
+
+      // 发送给 daemon，走 Agent-Native 模式（extracted_facts 已提供）
+      const result = await daemonPost("/hook", {
+        user_message: context || "Agent extracted knowledge",
+        ai_response: "",
+        agent_id: "openclaw-agent",
+        session_id: process.env.OPENCLAW_SESSION_ID || "",
+        extracted_facts: facts,  // ← 这是关键！daemon 会走 Agent-Native 模式直接存储
+      }, daemonUrl);
+
+      if (!result) {
+        return jsonToolResult({
+          content: `[CAM] ${facts.length} fact(s) queued (daemon offline)`,
+          queued: true,
+        });
+      }
+
+      return jsonToolResult({
+        content: [
+          `## CAM Knowledge Stored`,
+          `**Facts:** ${facts.length} submitted, ${result.facts_written || 0} written`,
+          `**Status:** ${result.status}`,
+          result.throttled ? `*(Throttled: ${result.message})*` : "",
+        ].filter(Boolean).join("\n"),
+        factsSubmitted: facts.length,
+        factsWritten: result.facts_written || 0,
+      });
+    },
+  };
+}
 
 /** cam_query: 搜索 Wiki 知识库 */
 function createCamQueryTool(daemonUrl: string) {
@@ -251,7 +352,7 @@ function createCamQueryTool(daemonUrl: string) {
     label: "CAM Query",
     description:
       "Search the CAM knowledge base (Wiki) for relevant facts, decisions, preferences, or knowledge. " +
-      "Returns structured results from the agent's long-term memory store.",
+      "Use this when you need to recall something from past conversations.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -304,7 +405,7 @@ function createCamStatsTool() {
   return {
     name: "cam_stats",
     label: "CAM Stats",
-    description: "Get CAM memory engine statistics including fact counts, storage size, and health status.",
+    description: "Get CAM memory engine statistics.",
     parameters: {
       type: "object" as const,
       properties: {},
@@ -312,14 +413,12 @@ function createCamStatsTool() {
     async execute() {
       const result = await daemonGet("/stats");
       if (!result) return jsonToolResult({ error: "CAM daemon is offline" });
-
       return jsonToolResult({
         content: [
           "## CAM Memory Stats",
           `**Status:** ${result.status || "unknown"}`,
           `**Facts:** ${(result as any).total_facts || 0}`,
           `**Pages:** ${(result as any).total_pages || 0}`,
-          `**Daemon:** online`,
         ].join("\n"),
         raw: result,
       });
@@ -327,135 +426,99 @@ function createCamStatsTool() {
   };
 }
 
-/** cam_ingest: 手动摄入内容 */
-function createCamIngestTool() {
-  return {
-    name: "cam_ingest",
-    label: "CAM Ingest",
-    description:
-      "Manually ingest text content into the CAM knowledge base for future retrieval. " +
-      "Use this to store important information that should be remembered across sessions.",
-    parameters: {
-      type: "object" as const,
-      properties: {
-        content: {
-          type: "string",
-          description: "Text content to store in the knowledge base",
-        },
-        source: {
-          type: "string",
-          description: "Source identifier (optional, e.g., 'user-note', 'document')",
-        },
-      },
-      required: ["content"],
-    },
-    async execute(_toolCallId: string, params: Record<string, unknown>) {
-      const content = String(params.content || "").trim();
-      if (!content) return jsonToolResult({ error: "content is required" });
-
-      const source = String(params.source || "manual");
-
-      const result = await daemonPost("/ingest", {
-        content,
-        source,
-        agent_id: "openclaw-manual",
-      });
-
-      if (!result) return jsonToolResult({ error: "CAM daemon is offline" });
-
-      return jsonToolResult({
-        content: `CAM ingested "${source}": ${result.status}`,
-        written: result.facts_written || 0,
-      });
-    },
-  };
-}
-
-/** cam_extract_file: 文件/图片/文档 → LLM提取 → 存入wiki */
+/**
+ * cam_extract_file: 文件/图片/文档 → Agent LLM 提取 → 存入 wiki
+ *
+ * Agent 读取文件后，用自身 LLM 分析，然后调用此 tool 存储
+ */
 function createCamExtractFileTool(daemonUrl: string) {
   return {
     name: "cam_extract_file",
     label: "CAM Extract File",
     description:
-      "Extract key information from a file, image, or document using LLM analysis, " +
-      "then automatically store the extracted knowledge into the CAM Wiki knowledge base. " +
-      "Use this when the user shares a project file, image, PDF, or document that contains " +
-      "valuable information worth remembering — such as design decisions, requirements, " +
-      "architecture notes, user preferences, or technical specifications.",
+      "Extract key information from a file, image, or document that you have already read/analyzed, " +
+      "then store the extracted knowledge into the CAM Wiki. " +
+      "Use this when the user shares a project file, image, or document containing " +
+      "valuable information worth remembering (design decisions, requirements, architecture, preferences, specs). " +
+      "YOU analyze the file with your LLM, then pass the extracted facts here.",
     parameters: {
       type: "object" as const,
       properties: {
         file_path: {
           type: "string",
-          description: "Absolute path to the file/image/document to analyze",
+          description: "Path of the file that was analyzed",
         },
-        file_content: {
-          type: "string",
-          description: "Text content of the file (if already read). Use this instead of file_path when available.",
+        facts: {
+          type: "array",
+          description: "Extracted facts from the file",
+          items: {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "The extracted fact/knowledge",
+              },
+              fact_type: {
+                type: "string",
+                description: "Type: 'entity', 'concept', 'synthesis', or 'fact'",
+                enum: ["entity", "concept", "synthesis", "fact"],
+              },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "Tags for categorization",
+              },
+            },
+            required: ["content"],
+          },
         },
-        description: {
+        summary: {
           type: "string",
-          description: "Brief description of what the file is and why it matters (helps extraction accuracy).",
-        },
-        context: {
-          type: "string",
-          description: "Additional conversation context about this file (what was discussed around it).",
+          description: "Brief summary of what the file contains and why it matters",
         },
       },
-      required: ["file_path"],
+      required: ["file_path", "facts"],
     },
     async execute(_toolCallId: string, params: Record<string, unknown>) {
       const filePath = String(params.file_path || "").trim();
+      const facts = params.facts as Array<Record<string, unknown>>;
+      const summary = String(params.summary || "");
+
       if (!filePath) return jsonToolResult({ error: "file_path is required" });
+      if (!facts || !Array.isArray(facts) || facts.length === 0) {
+        return jsonToolResult({ error: "facts array is required and must not be empty" });
+      }
 
-      const description = String(params.description || "");
-      const context = String(params.context || "");
-
-      // 发送给 daemon 的 /hook 端点，带 extracted_facts 标记
-      // daemon 会走 Agent-Native 模式：直接存储，不重复做 LLM 提取
+      // 走 Agent-Native 模式
       const result = await daemonPost("/hook", {
-        user_message: `User shared a file: ${filePath}${description ? `\nDescription: ${description}` : ""}${context ? `\nContext: ${context}` : ""}`,
+        user_message: `File: ${filePath}${summary ? `\nSummary: ${summary}` : ""}`,
         ai_response: "",
         agent_id: "openclaw-file-extract",
         session_id: "file-extraction",
+        extracted_facts: facts,
         metadata: {
           source_type: "file_extraction",
           file_path: filePath,
-          file_description: description,
-          conversation_context: context,
         },
       }, daemonUrl);
 
       if (!result) {
-        // Daemon offline but we should still tell the agent what happened
         return jsonToolResult({
-          content: `[CAM] File extraction queued for: ${filePath}\n(Daemon offline — will retry when back)`,
+          content: `[CAM] ${facts.length} fact(s) from ${filePath} queued (daemon offline)`,
           queued: true,
         });
       }
 
       return jsonToolResult({
         content: [
-          `## CAM File Extraction`,
-          `**File:** ${filePath}`,
+          `## CAM File Extraction: ${filePath}`,
+          `**Facts:** ${facts.length} submitted, ${result.facts_written || 0} written`,
           `**Status:** ${result.status}`,
-          result.facts_written ? `**Facts stored:** ${result.facts_written}` : "",
-          result.throttled ? `*(Throttled: ${result.message})*` : "",
-        ].filter(Boolean).join("\n"),
+        ].join("\n"),
+        factsSubmitted: facts.length,
         factsWritten: result.facts_written || 0,
-        throttled: result.throttled || false,
       });
     },
-  };
-}
-
-/** Helper: format tool output */
-function jsonToolResult(data: Record<string, unknown>) {
-  return {
-    content: data.content
-      ? [{ type: "text" as const, text: String(data.content) }]
-      : [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-    details: data,
   };
 }
 
@@ -468,9 +531,10 @@ let _cachedUserTs = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
- * before_prompt_build: 补充注入文件处理指令
- * ContextEngine.assemble() 已经负责了记忆召回，
- * 这里额外添加关于文件提取的提示
+ * before_prompt_build: 注入提取指令 + 文件处理提示
+ *
+ * 这是让 Agent "知道"它应该用 cam_extract 的关键！
+ * 告诉 Agent：你在对话中识别到重要知识时，应该主动调用 cam_extract
  */
 export function handleBeforePromptBuild(
   ctx: any & { config?: Record<string, unknown> },
@@ -482,10 +546,25 @@ export function handleBeforePromptBuild(
     prependSystemContext: [
       "",
       "<cam-instructions>",
-      "When the user sends you a file, image, document, or project artifact that contains important information:",
-      "1. Read and understand its contents",
-      "2. Use the `cam_extract_file` tool to extract and store key knowledge into the Wiki",
-      "3. This includes: design decisions, architecture choices, user preferences, requirements, tech specs, code patterns worth remembering",
+      "CAM (Compound Agent Memory) is active. You have access to long-term knowledge storage:",
+      "",
+      "## When to use cam_extract:",
+      "- The user expresses a clear **preference** (e.g., 'I prefer...', 'Always use...')",
+      "- A **decision** is made (e.g., 'We'll use React', 'Switched to PostgreSQL')",
+      "- The user **corrects** previous information",
+      "- Important **technical choices** or **architecture decisions** are discussed",
+      "- The user shares **personal context** they'd want remembered (name, role, project details)",
+      "- Any **factual knowledge** worth preserving across conversations",
+      "",
+      "## When to use cam_extract_file:",
+      "- The user shares a file, image, or document with important information",
+      "- Read it first, extract key facts, then call cam_extract_file to store them",
+      "",
+      "## When to use cam_query:",
+      "- You need to recall something from past conversations",
+      "- The user asks about previous decisions, preferences, or context",
+      "",
+      "IMPORTANT: Do NOT call cam_extract for every message — only when genuinely valuable knowledge is identified.",
       "</cam-instructions>",
       "",
     ].join("\n"),
@@ -506,14 +585,12 @@ export function handleMessageReceived(ctx: any): void {
   }
 }
 
-/**
- * llm_output: 检测是否有文件/图片被讨论 → 触发自动提取
- * 注意：大部分存储工作已由 ContextEngine.ingest() 完成，
- * 这里只做额外的文件检测和补充存储
- */
+/** llm_output: 检测文件讨论 → 提醒 Agent 使用 cam_extract_file */
 export async function handleLlmOutput(
   ctx: any & { config?: Record<string, unknown>; aiResponse?: string },
 ): Promise<void> {
+  // v5 中不再自动存储——由 Agent 主动通过 tool 完成
+  // 这里只做日志记录
   try {
     const config = ctx.config ? resolveConfig(ctx.config) : resolveConfig({});
     if (!config.extractOnOutput) return;
@@ -521,26 +598,10 @@ export async function handleLlmOutput(
     const aiResponse = ctx.aiResponse || ctx.lastAssistant || "";
     if (!aiResponse || aiResponse.length < 20) return;
 
-    // 检测 AI 回复中是否涉及文件分析
-    const fileIndicators = /\.(ts|js|py|json|yaml|yml|md|txt|pdf|png|jpg|jpeg|svg|csv|xlsx|docx)[`'\"\s]|file.*path|image.*content|document/i;
-    const hasFileReference = fileIndicators.test(aiResponse);
-
-    if (hasFileReference) {
-      const userMsg = getCachedUserMsg();
-      const result = await daemonPost("/hook", {
-        user_message: userMsg || "",
-        ai_response: aiResponse,
-        agent_id: "openclaw-auto-extract",
-        session_id: process.env.OPENCLAW_SESSION_ID || "",
-        metadata: {
-          source_type: "auto_file_detection",
-          detected_at: new Date().toISOString(),
-        },
-      }, config.daemonUrl);
-
-      if (result?.facts_written) {
-        console.log(`[cam-auto] 🧠 ${result.facts_written} fact(s) from file discussion`);
-      }
+    // 检测是否涉及文件，只打日志
+    const fileIndicators = /\.(ts|js|py|json|yaml|yml|md|txt|pdf|png|jpg|jpeg)[`'\"\s]/i;
+    if (fileIndicators.test(aiResponse)) {
+      console.log("[cam-output] File discussion detected — Agent should use cam_extract_file");
     }
   } catch (_) {}
 }
@@ -556,7 +617,7 @@ function getCachedUserMsg(): string {
 
 const camPlugin = {
   id: "cam",
-  version: "4.0.0",
+  version: "5.0.0",
 
   resolveConfig(env: Record<string, string>, value: Record<string, unknown>): Record<string, unknown> {
     const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -570,16 +631,16 @@ const camPlugin = {
     const config = resolveConfig(api.config);
     const engine = new CamContextEngine(config);
 
-    // ── Layer 1: ContextEngine (框架自动调用) ──
+    // ── Layer 1: ContextEngine (框架自动调用，不调 LLM) ──
     api.registerContextEngine("cam", () => engine);
 
-    // ── Layer 2: Tools (Agent 主动调用) ──
+    // ── Layer 2: Tools (Agent 主动调用 — 知识提取核心) ──
+    api.registerTool(() => createCamExtractTool(config.daemonUrl));     // 最核心！
     api.registerTool(() => createCamQueryTool(config.daemonUrl));
     api.registerTool(() => createCamStatsTool());
-    api.registerTool(() => createCamIngestTool());
     api.registerTool(() => createCamExtractFileTool(config.daemonUrl));
 
-    // ── Layer 3: Hooks (补充) ──
+    // ── Layer 3: Hooks (补充 — 注入提取指令) ──
     api.on("before_prompt_build", () =>
       handleBeforePromptBuild(config as any),
     );
@@ -590,10 +651,9 @@ const camPlugin = {
       handleLlmOutput(event);
     });
 
-    console.log(`[cam] Plugin v4 loaded (ContextEngine mode)`);
+    console.log(`[cam] Plugin v5 loaded (Agent-Native Extraction)`);
     console.log(`[cam] daemon=${config.daemonUrl}`);
-    console.log(`[cam] tools: cam_query, cam_stats, cam_ingest, cam_extract_file`);
-    console.log(`[cam] hooks: before_prompt_build, message_received, llm_output`);
+    console.log(`[cam] Agent extracts knowledge → cam_extract stores it (no external LLM needed)`);
   },
 };
 
