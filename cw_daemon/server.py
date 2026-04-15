@@ -643,6 +643,7 @@ else:
         engine: CwEngine = None
 
         def do_POST(self):
+            import asyncio
             content_len = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_len) if content_len > 0 else b"{}"
 
@@ -664,21 +665,27 @@ else:
                         session_id=data.get("session_id", ""),
                         metadata=data.get("metadata", {}),
                     )
-                    result = await self.engine.on_conversation_turn(req)
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self.engine.on_conversation_turn(req)
+                    )
                     response_data = result.to_dict()
                     status_code = 200 if result.success else 500
 
                 elif path == "/ingest":
-                    result = await self.engine.ingest_raw(
-                        content=data.get("content", ""),
-                        source=data.get("source", "manual"),
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self.engine.ingest_raw(
+                            content=data.get("content", ""),
+                            source=data.get("source", "manual"),
+                        )
                     )
                     response_data = result
 
                 elif path == "/query":
-                    results = await self.engine.query(
-                        question=data.get("q", ""),
-                        top_k=data.get("top_k", 5),
+                    results = asyncio.get_event_loop().run_until_complete(
+                        self.engine.query(
+                            question=data.get("q", ""),
+                            top_k=data.get("top_k", 5),
+                        )
                     )
                     response_data = results
 

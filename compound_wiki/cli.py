@@ -381,7 +381,7 @@ def cmd_lint(wiki_root=None):
                 if "file" in issue:
                     print(f"  {i}. [{issue['type']}] {os.path.relpath(issue['file'], root)}")
                 elif "link" in issue:
-                    print(f"  {i}. [{issue['type'}] [[{issue['link']}]]")
+                    print(f"  {i}. [{issue['type']}] [[{issue['link']}]]")
                 detail = issue.get("detail", "")
                 if detail:
                     print(f"     → {detail}")
