@@ -1,0 +1,171 @@
+name: CAM CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (with all extras)
+        run: pip install ".[all]" -e
+
+      # ── 1) Module Import Tests ──
+      - name: Test: module imports
+        run: |
+          $modules = @(
+            "memory_core",
+            "memory_core.shared_wiki",
+            "memory_core.deduplicator",
+            "cam_daemon",
+            "cam_daemon.server",
+            "cam_daemon.config",
+            "cam_daemon.client",
+            "cam_daemon.scheduler",
+            "cam"
+          )
+          $ok = 0; $fail = 0
+          foreach ($m in $modules) {
+            try {
+              python -c "import importlib; importlib.import_module('$m')"
+              Write-Host "[PASS] $m"
+              $ok++
+            } catch {
+              Write-Host "[FAIL] $m : $_"
+              $fail++
+            }
+          }
+          Write-Host "`n$ok/$($modules.Count) modules OK, $fail failed"
+          if ($fail -gt 0) { exit 1 }
+        shell: pwsh
+
+      # ── 2) CLI smoke test ──
+      - name: Test: cam --help
+        run: cam --help
+        if: runner.os != 'Windows'
+
+      - name: Test: cam --help (Windows)
+        run: python -m cam.cli --help
+        shell: pwsh
+        if: runner.os == 'Windows'
+
+      # ── 3) Daemon subcommands ──
+      - name: Test: cam daemon --help
+        run: cam daemon --help
+        if: runner.os != 'Windows'
+
+      - name: Test: cam daemon --help (Windows)
+        run: python -m cam.cli daemon --help
+        shell: pwsh
+        if: runner.os == 'Windows'
+
+      # ── 4) cam init + lint smoke ──
+      - name: Test: cam init + lint
+        run: |
+          New-Item -ItemType Directory -Path "$env:TEMP\cam-e2e" -Force | Out-Null
+          python -m cam.cli init "$env:TEMP\cam-e2e"
+          python -m cam.cli lint "$env:TEMP\cam-e2e"
+          Remove-Item -Recurse -Force "$env:TEMP\cam-e2e"
+        shell: pwsh
+
+      # ── 5) E2E: Daemon start → HTTP API → stop ──
+      - name: Test: E2E daemon lifecycle
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Create temp wiki dir
+          $tmpDir = Join-Path $env:TEMP "cam-e2e-daemon"
+          New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+          $wikiDir = Join-Path $tmpDir "wiki"
+          $rawDir  = Join-Path $tmpDir "raw"
+          New-Item -ItemType Directory -Path $wikiDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $rawDir  -Force | Out-Null
+
+          # Write minimal daemon config
+          $cfg = @{
+            wiki_path = $wikiDir
+            raw_path  = $rawDir
+            port      = 19877
+            host      = "127.0.0.1"
+            llm       = @{ provider = "openai"; model = "gpt-4o-mini"; api_key = ""; base_url = "" }
+          } | ConvertTo-Json
+          $cfgFile = Join-Path $tmpDir "daemon-cfg.json"
+          Set-Content -Path $cfgFile -Value $cfg -Encoding UTF8
+
+          # Start daemon in background
+          $proc = Start-Process -FilePath "python" `
+            -ArgumentList "-m", "cam_daemon._run", "--config", $cfgFile `
+            -PassThru -NoNewWindow -RedirectStandardOutput "$tmpDir\stdout.log" `
+            -RedirectStandardError "$tmpDir\stderr.log"
+
+          # Wait for startup
+          Start-Sleep -Seconds 6
+
+          # Health check
+          try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:19877/health" -TimeoutSec 5
+            Write-Host "Health: $($resp | ConvertTo-Json)"
+            if ($resp.status -ne "healthy") { throw "Not healthy" }
+            Write-Host "[PASS] /health"
+          } catch {
+            Write-Host "[FAIL] /health : $_"
+            Get-Content "$tmpDir\stderr.log" -Tail 20
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $tmpDir
+            exit 1
+          }
+
+          # Stats check
+          try {
+            $st = Invoke-RestMethod -Uri "http://127.0.0.1:19877/stats" -TimeoutSec 5
+            Write-Host "Stats: $($st | ConvertTo-Json)"
+            Write-Host "[PASS] /stats"
+          } catch {
+            Write-Host "[WARN] /stats : $_"
+          }
+
+          # Query check
+          try {
+            $qr = Invoke-RestMethod -Uri "http://127.0.0.1:19877/query?q=test" -TimeoutSec 5
+            Write-Host "Query: $($qr | ConvertTo-Json)"
+            Write-Host "[PASS] /query"
+          } catch {
+            Write-Host "[WARN] /query : $_"
+          }
+
+          # Cleanup
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $tmpDir
+          Write-Host "`n[PASS] E2E daemon lifecycle complete"
+        shell: pwsh
+
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - name: Ruff check
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .

@@ -60,10 +60,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/canyonqian/cam"
-Documentation = "https://github.com/canyonqian/cam#readme"
-Repository = "https://github.com/canyonqian/cam.git"
-Issues = "https://github.com/canyonqian/cam/issues"
+Homepage = "https://github.com/canyonqian/cam-compound-agent-memory"
+Documentation = "https://github.com/canyonqian/cam-compound-agent-memory#readme"
+Repository = "https://github.com/canyonqian/cam-compound-agent-memory.git"
+Issues = "https://github.com/canyonqian/cam-compound-agent-memory/issues"
 
 # ============================================================
 #  CLI 入口点 — 安装后直接用 `cw` 命令
