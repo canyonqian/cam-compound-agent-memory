@@ -465,14 +465,20 @@ class SharedWiki:
     
     async def _add_fact_to_page(self, rel_path: str, fact_content: str,
                                  fact_data: Dict = None) -> int:
-        """Add a fact to a Wiki page (creating or appending)."""
+        """Add a fact to a Wiki page (creating or merging with dedup)."""
         full_path = self.wiki_path / rel_path
         
         if full_path.exists():
-            # Append to existing page
+            # Read existing content
             with open(str(full_path), 'r', encoding='utf-8') as f:
                 existing = f.read()
             
+            # --- Dedup check: skip if this fact already exists ---
+            if self._is_duplicate_fact(existing, fact_content):
+                logger.debug(f"Skipping duplicate fact in {rel_path}")
+                return 0
+            # --- End dedup check ---
+
             # Insert before the last --- if it exists, or append
             if existing.rstrip().endswith('---'):
                 # Find last ---
@@ -494,6 +500,63 @@ class SharedWiki:
             await self._atomic_write(rel_path, page_content)
         
         return 1
+
+    @staticmethod
+    def _is_duplicate_fact(existing_content: str, new_fact_content: str,
+                           threshold: float = 0.85) -> bool:
+        """Check if new_fact_content is a duplicate of an existing fact block.
+        
+        Uses simple heuristic: extract the core fact line (first non-empty line
+        after the emoji header) and compare via substring/similarity match.
+        """
+        import difflib
+        
+        # Extract the "content line" from new fact — it's the first meaningful text line
+        new_lines = [l.strip() for l in new_fact_content.split('\n')
+                     if l.strip() and not l.startswith('│') and not l.startswith('█')]
+        # Skip emoji/type header lines like "🎯 **Preference** | ..."
+        new_core = ""
+        for line in new_lines:
+            if not line.startswith('🎯') and not line.startswith('📌') and \
+               not line.startswith('💡') and not line.startswith('✅') and \
+               not line.startswith('📋') and not line.startswith('🏷️') and \
+               not line.startswith('*Source*') and not line.startswith('*Tags*') and \
+               not line.startswith('*Entities*') and not line.startswith('Confidence'):
+                new_core = line
+                break
+        
+        if not new_core:
+            return False
+
+        # Split existing into fact blocks and compare each
+        blocks = existing_content.split('---')
+        for block in blocks:
+            block = block.strip()
+            if len(block) < 10:
+                continue
+            
+            block_lines = [l.strip() for l in block.split('\n') if l.strip()]
+            for line in block_lines:
+                if (not line.startswith('🎯') and not line.startswith('📌') and \
+                    not line.startswith('💡') and not line.startswith('✅') and \
+                    not line.startswith('📋') and not line.startswith('🏷️') and \
+                    not line.startswith('*Source*') and not line.startswith('*Tags*') and \
+                    not line.startswith('*Entities*') and not line.startswith('Confidence') and
+                    len(line) > 5):
+                    
+                    # Fast path: exact or near-exact substring match
+                    if new_core == line:
+                        return True
+                    
+                    # Slower path: similarity ratio
+                    ratio = difflib.SequenceMatcher(None, new_core, line).ratio()
+                    if ratio >= threshold:
+                        logger.debug(f"Duplicate detected (ratio={ratio:.2f}): "
+                                   f"'{new_core[:50]}' ~ '{line[:50]}'")
+                        return True
+                    break  # Only check first content line per block
+        
+        return False
     
     async def _update_index(self, entry: Dict = None) -> None:
         """Update the main Wiki index file."""
@@ -543,7 +606,7 @@ class SharedWiki:
         
         Called automatically by HookEngine.on_turn_end().
         
-        Returns number of facts actually written.
+        Returns number of facts actually written (after dedup).
         """
         if not facts:
             return 0
@@ -553,24 +616,12 @@ class SharedWiki:
             for fact in facts:
                 tx.add_fact(fact)
             
-            # Log this batch
+            # Log this batch once
             tx.log_change(
                 change_type="auto_extract",
                 description=f"{len(facts)} facts from {source}",
             )
-            
-            # Note: commit happens when exiting the context manager
-            written = len(facts)  # All facts queued for commit
-            for fact in facts:
-                tx.add_fact(fact)
-            
-            # Log this batch
-            tx.log_change(
-                change_type="auto_extract",
-                description=f"{len(facts)} facts from {source}",
-            )
-            
-            # Note: commit happens when exiting the context manager
+            written = len(facts)
         
         return written
     
@@ -639,14 +690,6 @@ class SharedWiki:
         from .deduplicator import ExistingFact
         
         facts = []
-        try:
-            pages = asyncio.get_event_loop().run_until_complete(
-                self.list_pages()
-            ) if False else []  # Sync fallback
-        except Exception:
-            pass
-        
-        # Simple sync implementation for now
         for subdir in ["concept", "entity", "synthesis"]:
             dir_path = self.wiki_path / subdir
             if not dir_path.exists():
@@ -659,7 +702,7 @@ class SharedWiki:
                     blocks = content.split("---")
                     for block in blocks:
                         block = block.strip()
-                        if len(block) > 20 and not block.startswith("#"):
+                        if len(block) > 20 and not block.startswith("#") and not block.startswith("Auto-generated"):
                             ef = ExistingFact(
                                 fact_id=hashlib.sha256(
                                     block.encode()
@@ -675,5 +718,3 @@ class SharedWiki:
         
         return facts
 
-
-import asyncio

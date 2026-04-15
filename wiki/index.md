@@ -1,8 +1,8 @@
 # Compound Wiki - 全局索引
 
-> **最后更新**: 2026-04-14
-> **页面总数**: 0
-> **状态**: 等待首次 INGEST
+> **最后更新**: 2026-04-15
+> **页面总数**: 2
+> **状态**: 活跃
 
 ---
 
@@ -10,10 +10,10 @@
 
 | 类型 | 数量 |
 |------|------|
-| 概念页 (`concept/`) | 0 |
+| 概念页 (`concept/`) | 1 |
 | 实体页 (`entity/`) | 0 |
-| 综合页 (`synthesis/`) | 0 |
-| **合计** | **0** |
+| 综合页 (`synthesis/`) | 1 |
+| **合计** | **2** |
 
 ---
 
@@ -21,7 +21,7 @@
 
 > 抽象的理论、方法、定义、原理等。
 
-_（暂无页面）_
+- **[PostgreSQL Query Optimizer](concept/postgresql-query-optimizer-handles-complex-6bd39a4a.md)** — PostgreSQL query optimizer handles complex aggregations well `concept` `database` `performance`
 
 ---
 
@@ -31,17 +31,21 @@ _（暂无页面）_
 
 _（暂无页面）_
 
+---
+
 ## 🔗 综合 (Synthesis)
 
 > 对比分析、综合综述、总结归纳等高阶知识产物。
 
-_（暂无页面）_
+- **[User Chose PostgreSQL](synthesis/user-chose-postgresql-for-the-e9c5459a.md)** — User chose PostgreSQL for the analytics database `synthesis` `database` `decision`
 
 ---
 
 ## 🏷️ 标签索引
 
-_（暂无标签）_
+- `database` — [[PostgreSQL Query Optimizer]], [[User Chose PostgreSQL]]
+- `performance` — [[PostgreSQL Query Optimizer]]
+- `decision` — [[User Chose PostgreSQL]]
 
 ---
 
@@ -49,7 +53,8 @@ _（暂无标签）_
 
 | 日期 | 操作 | 页面 |
 |------|------|------|
-| - | - | - |
+| 2026-04-14 | INGEST | concept/postgresql-query-optimizer-handles-complex-6bd39a4a.md |
+| 2026-04-14 | INGEST | synthesis/user-chose-postgresql-for-the-e9c5459a.md |
 
 ---
 

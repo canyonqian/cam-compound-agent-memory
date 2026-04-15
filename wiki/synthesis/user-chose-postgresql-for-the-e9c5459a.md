@@ -13,38 +13,5 @@ User chose PostgreSQL for the analytics database
 *Tags*: `database` `decision`
 
 *Entities*: [[PostgreSQL]]
-✅ **Decision** | Confidence: `█████████░` (95%)
-
-User chose PostgreSQL for the analytics database
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `decision`
-
-*Entities*: [[PostgreSQL]]
-
----
-✅ **Decision** | Confidence: `█████████░` (95%)
-
-User chose PostgreSQL for the analytics database
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `decision`
-
-*Entities*: [[PostgreSQL]]
-
----
-✅ **Decision** | Confidence: `█████████░` (95%)
-
-User chose PostgreSQL for the analytics database
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `decision`
-
-*Entities*: [[PostgreSQL]]
-
----
 
 ---

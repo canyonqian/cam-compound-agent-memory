@@ -13,38 +13,5 @@ PostgreSQL query optimizer handles complex aggregations well
 *Tags*: `database` `performance`
 
 *Entities*: [[PostgreSQL]]
-💡 **Concept** | Confidence: `█████████░` (90%)
-
-PostgreSQL query optimizer handles complex aggregations well
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `performance`
-
-*Entities*: [[PostgreSQL]]
-
----
-💡 **Concept** | Confidence: `█████████░` (90%)
-
-PostgreSQL query optimizer handles complex aggregations well
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `performance`
-
-*Entities*: [[PostgreSQL]]
-
----
-💡 **Concept** | Confidence: `█████████░` (90%)
-
-PostgreSQL query optimizer handles complex aggregations well
-
-*Source*: > I think we should use PostgreSQL for the analytics database PostgreSQL is an excellent choice for analytics workloads. Its query optimizer handles com...
-
-*Tags*: `database` `performance`
-
-*Entities*: [[PostgreSQL]]
-
----
 
 ---

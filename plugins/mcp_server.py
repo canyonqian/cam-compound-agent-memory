@@ -225,17 +225,89 @@ def _save_raw(content: str, title: str, url: str,
 
 def _save_page(filename: str, content: str, paths: Dict[str, Path]) -> Dict[str, Any]:
     """
-    Save a wiki page. Returns status dict.
+    Save a wiki page with merge semantics (dedup before write).
+    
+    If the page already exists and new content contains fact blocks,
+    only append blocks that don't already exist (similarity < 0.85).
+    For non-fact content or completely new files, use normal behavior.
     """
+    import difflib
+    
     wiki_dir = paths["wiki"]
     filepath = wiki_dir / filename
     filepath.parent.mkdir(parents=True, exist_ok=True)
     
     is_new = not filepath.exists()
+    
+    if not is_new:
+        # --- Merge mode: deduplicate fact blocks ---
+        existing = filepath.read_text(encoding="utf-8")
+        
+        # Check if both old and new content look like fact-based wiki pages
+        if "---" in existing and "---" in content:
+            existing_blocks = [b.strip() for b in existing.split("---") if b.strip() and len(b.strip()) > 20]
+            new_blocks = [b.strip() for b in content.split("---") if b.strip() and len(b.strip()) > 20]
+            
+            # Extract core content lines for comparison
+            def _core_line(block: str) -> str:
+                for line in block.split("\n"):
+                    l = line.strip()
+                    if l and not any(l.startswith(p) for p in [
+                        "🎯", "📌", "💡", "✅", "📋", "🏷️",
+                        "*Source*", "*Tags*", "*Entities*",
+                        "Confidence", "# "
+                    ]):
+                        return l
+                return ""
+            
+            deduped_new_blocks = []
+            for nb in new_blocks:
+                nb_core = _core_line(nb)
+                if not nb_core:
+                    deduped_new_blocks.append(nb)
+                    continue
+                    
+                is_dup = False
+                for eb in existing_blocks:
+                    eb_core = _core_line(eb)
+                    if not eb_core:
+                        continue
+                    if nb_core == eb_core:
+                        is_dup = True
+                        break
+                    ratio = difflib.SequenceMatcher(None, nb_core, eb_core).ratio()
+                    if ratio >= 0.85:
+                        logger.debug(f"  _save_page: skipping duplicate block "
+                                   f"(ratio={ratio:.2f})")
+                        is_dup = True
+                        break
+                
+                if not is_dup:
+                    deduped_new_blocks.append(nb)
+            
+            if len(deduped_new_blocks) < len(new_blocks):
+                logger.info(f"  📄 MERGE: {filename} — "
+                           f"deduplicated {len(new_blocks) - len(deduped_new_blocks)} blocks")
+            
+            # Rebuild content with deduplicated new blocks appended
+            if deduped_new_blocks:
+                merged_content = existing.rstrip().rstrip("---").rstrip() + "\n"
+                for block in deduped_new_blocks:
+                    merged_content += f"\n{block}\n---\n"
+                content = merged_content
+    
     filepath.write_text(content, encoding="utf-8")
     
     rel_path = str(filepath.relative_to(wiki_dir))
-    action = "CREATED" if is_new else "UPDATED"
+    action = "CREATED" if is_new else ("MERGED" if not is_new and "---" in content else "UPDATED")
+    
+    # Auto-update index when a page is written
+    try:
+        _update_index(paths)
+        logger.debug(f"  📋 Index updated after writing {rel_path}")
+    except Exception as e:
+        logger.debug(f"  ⚠️ Failed to update index: {e}")
+    
     logger.info(f"  📄 {action}: {rel_path}")
     
     return {

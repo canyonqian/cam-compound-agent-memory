@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger("memory_core.deduplicator")
 
@@ -435,11 +436,46 @@ class Deduplicator:
         return merged
     
     async def _load_existing_facts(self) -> List[ExistingFact]:
-        """Load existing facts from Wiki index."""
+        """Load existing facts from Wiki index or by scanning wiki directory."""
         if self.wiki_index:
-            return await self.wiki_index.get_all_facts()
-        # Return empty if no index loaded — all facts will be treated as new
-        return []
+            try:
+                return await self.wiki_index.get_all_facts()
+            except Exception as e:
+                logger.warning(f"Failed to load from wiki_index, falling back to scan: {e}")
+
+        # Fallback: scan wiki directories directly
+        facts = []
+        wiki_path = Path(self.config.storage.wiki_path) if self.config else None
+        if not wiki_path or not wiki_path.exists():
+            return facts
+
+        for subdir in ["concept", "entity", "synthesis"]:
+            dir_path = wiki_path / subdir
+            if not dir_path.exists():
+                continue
+
+            for md_file in dir_path.glob("*.md"):
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                    blocks = content.split("---")
+                    for block in blocks:
+                        block = block.strip()
+                        if len(block) > 20 and not block.startswith("#") and not block.startswith("Auto-generated"):
+                            lines = [l.strip() for l in block.split("\n") if l.strip()]
+                            if lines:
+                                ef = ExistingFact(
+                                    fact_id=hashlib.sha256(block.encode()).hexdigest()[:16],
+                                    content=lines[0][:200] if lines else block[:200],
+                                    fact_type=subdir[:-1] if subdir != "synthesis" else "decision",
+                                    source_file=str(md_file.relative_to(wiki_path)),
+                                    status="active",
+                                )
+                                facts.append(ef)
+                except Exception as e:
+                    logger.debug(f"Error reading {md_file}: {e}")
+
+        logger.info(f"Deduplicator loaded {len(facts)} existing facts from Wiki scan")
+        return facts
     
     @property
     def stats(self) -> Dict[str, Any]:

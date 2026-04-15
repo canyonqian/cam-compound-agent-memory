@@ -8,7 +8,10 @@
 
 | # | 时间 | 操作类型 | 涉及文件 | 说明 |
 |---|------|---------|---------|------|
-| - | - | - | - |
+| 1 | 2026-04-14T17:35 | INGEST | concept/postgresql-query-optimizer-handles-complex-6bd39a4a.md | auto_extract: 2 facts from auto_hook |
+| 2 | 2026-04-15T13:30 | CLEANUP | concept/, synthesis/ | 去重清理：每个页面保留1份，删除4倍重复 |
+
+---
 
 ### 操作类型说明
 - `INGEST`: 从 raw/ 新建/更新 Wiki 页面
@@ -17,7 +20,4 @@
 - `DEPRECATE`: 标记页面为过时
 - `LINT`: 执行健康审计
 - `SYNTHESIS`: 创建综合分析页
-- **2026-04-14T17:35:47.772861** | `default` | auto_extract: 2 facts from auto_hook
-- **2026-04-14T17:36:03.697407** | `default` | auto_extract: 2 facts from auto_hook
-- **2026-04-14T17:36:34.453452** | `default` | auto_extract: 2 facts from auto_hook
-- **2026-04-14T17:36:55.306208** | `default` | auto_extract: 2 facts from auto_hook
+- `CLEANUP`: 去重/清理操作

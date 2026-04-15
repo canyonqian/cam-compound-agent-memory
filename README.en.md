@@ -8,15 +8,16 @@
   <a href="./README.md">🇨🇳 中文</a> ·
   <a href="./README.en.md">English</a> &nbsp;&nbsp;
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a="#quick-start"><img src="https://img.shields.io/badge/Status-Ready-green" alt="Status"></a>
-  <a href="https://github.com/"><img src="https://img.shields.io/badge/PRs-Welcome-blue" alt="PRs Welcome"></a>
+  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Status-Ready-green" alt="Status"></a>
+  <a href="https://github.com/canyonqian/compound-wiki/issues"><img src="https://img.shields.io/badge/PRs-Welcome-blue" alt="PRs Welcome"></a>
 </p>
 
 ---
 
 ## ✨ What is This?
 
-**Compound Wiki** is an **open-source, universal AI Agent memory and knowledge management solution**. Inspired by Andrej Karpathy's [LLM-Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) concept and refined with best practices from the OpenClaw three-layer memory system.
+**Compound Wiki** is an **open-source, universal AI Agent memory and knowledge management solution**. Inspired by Andrej Karpathy's [LLM-Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) concept, refined with best practices from the OpenClaw three-layer memory system.
 
 > **In a nutshell**: You just feed materials into it, AI handles organizing everything into a structured Wiki. Knowledge auto-connects and continuously evolves — **it gets smarter the more you use it**.
 
@@ -29,75 +30,94 @@
 | 🔗 **Knowledge Network** | Double-link mechanism forces AI to think about connections between concepts |
 | 📝 **Pure Markdown** | No database needed, no proprietary software — still readable in 10 years |
 | 🔍 **LINT Auditing** | Built-in health checks to prevent error amplification in loops |
-| 🔌 **Agent-Agnostic** | Works with Claude Code, Cursor, Copilot, or any AI agent that can read/write files |
-| 📦 **Zero Dependencies** | Just need a local folder + an AI that can read and write files |
+| 🚀 **Daemon Process** | **NEW in v2.0!** One HTTP service handles memory for ALL Agents — integrate in 1 line |
+| 🔌 **Agent-Agnostic** | OpenClaw / Hermes / Claude Code / Cursor / Copilot / Any HTTP-capable Agent |
+| 📦 **pip Install** | `pip install compound-wiki` — one command, globally available |
+| 🛡️ **Smart Dedup** | Similarity-based dedup engine — auto-merges duplicate facts, prevents knowledge bloat |
 
 ---
 
-## 📐 Architecture
+## 📐 Architecture (v2.0)
 
 ```
 compound-wiki/
 │
-├── raw/                      📥 Raw Material Layer
-│   ├── *.md                  (You drop stuff here)
-│   ├── *.txt
-│   └── ...
+├── cw_daemon/               🚀 v2.0 Core — Daemon Process (NEW!)
+│   ├── server.py            ⭐ FastAPI HTTP server + extract/dedup/write pipeline
+│   ├── config.py            Config system (LLM / port / throttle params)
+│   ├── client.py            Lightweight SDK (3-line integration for any Agent)
+│   ├── daemon.py            Lifecycle management (PID / graceful shutdown)
+│   ├── scheduler.py         Scheduled tasks (LINT / index rebuild / stats)
+│   └── _run.py              Entry point
 │
-├── wiki/                     📝 Knowledge Layer (AI-maintained)
-│   ├── index.md              ← Global index
-│   ├── changelog.md          ← Change log
-│   ├── concept/              ← Concept pages (theories, methods)
-│   ├── entity/               ← Entity pages (people, orgs, tools)
-│   └── synthesis/            ← Synthesis pages (comparisons, reviews)
+├── memory_core/             🧠 Memory Core v2.0
+│   ├── deduplicator.py      ⭐ Smart dedup engine (similarity detection + merge)
+│   ├── shared_wiki.py       ⭐ Concurrent-safe Wiki (file locks + atomic writes + merge mode)
+│   ├── agent_sdk.py         ⭐ Agent SDK (decorator / MCP / HTTP multi-mode)
+│   ├── mcp_server.py        MCP protocol server
+│   └── examples/
 │
-├── schema/                   ⚙️ Schema Layer (you define rules)
-│   ├── CLAUDE.md             ← ⭐ Core! AI behavior specification
-│   ├── PERSPECTIVE.md        ← Your perspective preferences (optional)
-│   └── templates/            ← Page templates
-│       ├── concept.md
-│       ├── entity.md
-│       └── synthesis.md
+├── compound_wiki/           ⭐ CLI entry point
+│   ├── cli.py               Unified CLI interface
+│   └── cli_daemon.py        🆕 Daemon management subcommands
 │
-├── outputs/                  📤 Output Layer (Q&A results)
+├── plugins/                 🧩 Plugin System
+│   ├── mcp_server.py        MCP Server (6 tools)
+│   ├── openclaw/index.ts    OpenClaw plugin (→ HTTP mode)
+│   └── sources/             9 data source plugins
 │
-├── plugins/                  🧩 Plugin System (v1.2+)
-│   ├── mcp_server.py        ← MCP Protocol Server (6 AI tools)
-│   ├── config.json          ← Unified plugin config
-│   ├── sources/             ← 9 Data source plugins
-│   │   ├── api_source.py    ← REST API endpoint
-│   │   ├── browser.py       ← Browser clipper (bookmarklet)
-│   │   ├── clipboard.py     ← Clipboard monitor
-│   │   ├── email_source.py  ← IMAP email watcher
-│   │   ├── rss_source.py    ← RSS feed reader
-│   │   ├── bot_telegram.py  ← Telegram bot
-│   │   ├── bot_discord.py   ← Discord bot
-│   │   ├── webhook_source.py← Webhook receiver
-│   │   └── file_watch.py    ← Enhanced file watcher
-│   └── adapters/            ← Output adapters
-│       ├── obsidian.py      ← Obsidian vault sync
-│       └── logseq.py        ← Logseq export
-│
-├── auto/                     ⚡ Auto Engine (v1.1+)
-│   ├── config.py             ← Configuration system
-│   ├── state.py              ← State persistence
-│   ├── watcher.py            ← File monitor
-│   ├── pipeline.py           ← LLM ingestion engine
-│   ├── collector.py          ← Web fetcher
-│   ├── scheduler.py          ← Task scheduler
-│   ├── agent.py              ← Main CLI entry
-│   ├── config.json           ← Default config
-│   ├── cw-auto.bat           ← Windows launcher
-│   └── cw-auto.sh            ← Unix launcher
-│
-├── scripts/                  🔧 Utility tools
-│   ├── cw_tool.py            ← Python toolkit
-│   ├── cw.bat                ← Windows launcher
-│   └── cw.sh                 ← macOS/Linux launcher
-│
-└── examples/                 📚 Examples
-   └── raw-sample/           ← Sample raw materials
+├── auto/                    ⚡ Auto Engine (file watcher + scheduled ingest)
+├── schema/                  ⚙️ Rules layer (CLAUDE.md AI behavior spec + templates)
+├── raw/                     📥 Raw material drop zone
+├── wiki/                    📝 Knowledge base (AI-maintained, double-linked)
+├── outputs/                 📤 Output layer
+├── scripts/cw_tool.py       🔧 Utility tools
+├── examples/                📚 Examples
+├── README.md / README.en.md
+└── LICENSE                  MIT
 ```
+
+### v2.0 Architecture Overview — Unified Daemon Memory Layer
+
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│  OpenClaw   │  │   Hermes    │  │ Claude Code │  │  Cursor     │
+│  (TypeScript)│  │  (Python)  │  │  (MCP)      │  │  (MCP)      │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │ POST /hook       │ POST /hook       │ MCP tools       │ MCP tools
+       │                  │                  │                 │
+       └──────────────────┼──────────────────┼─────────────────┘
+                          ▼
+              ┌───────────────────────┐
+              │    cw_daemon (v2.0)    │  ← One process, unified memory for ALL Agents
+              │                       │
+              │  ┌─────────────────┐  │
+              │  │ ThrottleController│  │  ← 10s debounce + content hash dedup
+              │  ├─────────────────┤  │
+              │  │ CwEngine        │  │  ← LLM extract → dedup → write → update index
+              │  ├─────────────────┤  │
+              │  │ Deduplicator    │  │  ← Similarity >85% auto-merge
+              │  └─────────────────┘  │
+              │                       │
+              │  GET /query  /stats   │  ← Query & Stats API
+              └──────────┬────────────┘
+                         │ Write
+                         ▼
+              ┌───────────────────────┐
+              │       wiki/            │  ← Structured knowledge base
+              │  concept/entity/synthesis
+              └───────────────────────┘
+```
+
+**v1.x → v2.0 Key Changes:**
+
+| | v1.x (Plugin Mode) | v2.0 (Daemon Mode) |
+|---|---|---|
+| Each Agent needs | Write custom plugin (~200 lines) | **1 HTTP call** |
+| Dedup logic | Per-agent (buggy) | **Unified in Daemon** |
+| Write paths | MCP / MC dual-track (inconsistent) | **Single write pipeline** |
+| Index update | Never auto-updated | **Auto-updated after every write** |
+| New Agent onboarding | ~200 lines of code | **3 lines of code** |
 
 ### Responsibility Boundary
 
@@ -107,7 +127,6 @@ compound-wiki/
 │                                             │
 │  ✅ Drop materials into raw/                │
 │  ✅ Define schema/CLAUDE.md rules           │
-│  ✅ Define schema/PERSPECTIVE.md view       │
 │  ✅ Read contents from wiki/                │
 │  ✅ Review LINT reports periodically        │
 │                                             │
@@ -117,7 +136,7 @@ compound-wiki/
 ├─────────────────────────────────────────────┤
 │               AI (Agent)                    │
 │                                             │
-│  ✅ Read raw materials from raw/           │
+│  ✅ Read raw materials from raw/            │
 │  ✅ Create/update all pages in wiki/        │
 │  ✅ Build [[double-link]] connections       │
 │  ✅ Maintain index.md and changelog.md     │
@@ -130,182 +149,159 @@ compound-wiki/
 └─────────────────────────────────────────────┘
 ```
 
-### 🤖 Auto Engine (v1.1+)
-
-> **NEW in v1.1!** Compound Wiki now has full automation capabilities — it can run as a background daemon.
-
-```
-compound-wiki/
-│
-├── auto/                     ⚡ Auto Engine (NEW!)
-│   ├── __init__.py          ← Package init
-│   ├── config.py            ← Config system (paths, API keys, models)
-│   ├── state.py             ← State manager (history, incremental tracking)
-│   ├── watcher.py           ← File watcher (monitors raw/ for changes)
-│   ├── pipeline.py          ← Ingestion pipeline (LLM-powered processing)
-│   ├── collector.py         ← Web collector (URLs → raw/)
-│   ├── scheduler.py         ← Cron-like scheduler (timed tasks)
-│   ├── agent.py             ← Main entry point & CLI
-│   ├── config.json          ← Default config file
-│   ├── cw-auto.bat          ← Windows launcher
-│   └── cw-auto.sh           ← Unix/macOS launcher
-│
-├── schema/CLAUDE.md          ← New "Chapter 8: Auto Engine Behavior"
-│
-... (other dirs unchanged)
-```
-
-**Automation Architecture**:
-
-```
-┌─────────┐     ┌──────────┐     ┌──────┐
-│ Web URL │────▶│ Collector │────▶│ raw/ │
-└─────────┘     └──────────┘     └──┬───┘
-                                   │ File events
-              ┌────────────────────▼──────────────┐
-              │           FileWatcher              │
-              │  Monitors raw/, detects new files   │
-              └────────────────────┬──────────────┘
-                                   │ auto-ingest
-              ┌────────────────────▼──────────────┐
-              │        IngestionPipeline           │
-              │  Raw + CLAUDE.md → LLM → Wiki      │
-              └────────────────────┬──────────────┘
-                                   │ Write pages
-                    ┌──────────────▼──────────────┐
-                    │            wiki/              │
-                    │ concept / entity / synthesis  │
-                    └──────────┬──────────┬────────┘
-                               │          │
-               ┌───────────────▼──┐  ┌────▼─────────┐
-               │  Query() Q→A    │  │  Scheduler    │
-               │ + Auto-archive  │  │  Daily LINT    │
-               └─────────────────┘  │  Weekly summary│
-                                    │  Monthly report│
-                                    └──────────────┘
-```
-
-**CLI Commands**:
-
-```bash
-# Initialize (first time only)
-python auto/agent.py init
-
-# Full auto mode (runs all modules in background)
-python auto/agent.py start
-
-# One-shot operations
-python auto/agent.py ingest              # Process pending raw files
-python auto/agent.py query "What is X?"  # Query knowledge base
-python auto/agent.py lint                 # Health check
-python auto/agent.py collect <URL>        # Fetch webpage into raw/
-
-# View stats
-python auto/agent.py status               # Statistics dashboard
-
-# Or use the one-click launcher:
-auto/cw-auto.bat start        # Windows
-./auto/cw-auto.sh start       # Linux/macOS
-```
-
-**Automation Capability Matrix**:
-
-| Capability | Manual | Automatic | Notes |
-|------------|--------|-----------|-------|
-| **Ingestion** | Say "INGEST" | Watcher detects new `raw/` files | 3s debounce + 30s batch window |
-| **Web Collection** | Provide URL | Collector fetches | RSS/bookmark/clipboard support |
-| **Query & Archive** | Ask question | — | Answers auto-archived as synthesis pages |
-| **Health Check** | Say "LINT" | Scheduled daily @ 08:00 | Report written to `outputs/` |
-| **Weekly Summary** | — | Every Sunday @ 20:00 | Growth statistics |
-| **Monthly Report** | — | 1st of each month @ 09:00 | Compound effect analysis |
-| **State Tracking** | — | Fully automatic | SHA256 incremental, atomic writes |
-
 ---
 
 ## 🚀 Quick Start
 
-### Method A: Use This Project Template
+> ⚡ **v2.0 — Zero-config integration for any AI Agent, no API key needed!**
+
+### Method A: Daemon Mode (Recommended — NEW in v2.0)
+
+The most powerful approach. Start one daemon, all Agents connect via HTTP:
 
 ```bash
-# 1. Clone or download this project
-git clone https://github.com/your-repo/compound-wiki.git
-cd compound-wiki
+# 1. Install
+pip install compound-wiki
 
-# 2. Edit your knowledge base rules
-# Open schema/CLAUDE.md and customize for your needs
+# 2. Start the daemon
+cw daemon start --wiki ./wiki --port 9877
 
-# 3. (Recommended) Configure your perspective
-cp schema/PERSPECTIVE.example.md schema/PERSPECTIVE.md
-# Then edit PERSPECTIVE.md with your info
+# 3. Any Agent just sends conversations (1 line!)
+curl -X POST http://localhost:9877/hook \
+  -H "Content-Type: application/json" \
+  -d '{"user_message": "We use PostgreSQL", "ai_response": "Noted", "agent_id": "openclaw"}'
 
-# 4. Drop materials into raw/
+# Python Agent (3-line integration)
+from cw_daemon.client import CwClient, AutoRemember
 
-# 5. Open this directory with an AI Agent and issue INGEST command
+client = CwClient()                              # Default: localhost:9877
+auto = AutoRemember(agent_id="my-bot")           # Or use decorator pattern
+
+reply = await my_llm.chat(user_msg)
+await auto(user_msg, reply)                      # ← That's it! Auto-extract + dedup + write
+
+# Query knowledge base
+result = await client.query("database selection") # Returns relevant Wiki pages
+
+# Management
+cw daemon status    # Check daemon status
+cw daemon stop      # Stop gracefully
+cw daemon ping      # Quick health check
 ```
 
-### Method B: Build From Scratch
+**Full Daemon CLI:**
 
 ```bash
-# 1. Create directory structure
-mkdir compound-wiki && cd compound-wiki
-mkdir raw wiki/concept wiki/entity wiki/synthesis schema/templates outputs
+cw daemon start [--wiki PATH] [--port PORT] [--host HOST]  # Start daemon
+cw daemon stop                                            # Graceful stop
+cw daemon restart                                         # Restart
+cw daemon status                                          # View status
+cw daemon ping                                            # Quick health check
+```
 
-# 2. Copy schema/CLAUDE.md (from this project's schema/ directory)
+### Method B: MCP Plugin (For MCP-compatible Agents)
 
-# 3. Drop materials into raw/
+```bash
+pip install 'compound-wiki[mcp]'
+# Add MCP Server config in your AI tool (see INSTALL.md)
+# Supports: Claude Desktop · Claude Code · Cursor · Copilot · Windsurf
+```
 
-# 4. Tell your AI the command below 👇
+**Why no API key?** Compound Wiki uses **Agent-Native mode**: the Daemon handles orchestration and storage; calling AI Agents use their own LLM for knowledge extraction. Zero extra cost.
+
+### Method C: CLI (Standalone)
+
+```bash
+pip install compound-wiki
+cw init my-knowledge-base
+cd my-knowledge-base
+# Drop files into raw/
+cw ingest          # Process materials → AI compiles Wiki
+cw stats           # View statistics
+cw lint            # Health check
+cw query "What is X?" # Query knowledge base
+```
+
+### Method D: From Source (Developers)
+
+```bash
+git clone https://github.com/canyonqian/compound-wiki.git
+cd compound-wiki
+pip install -e .          # Editable mode for development
+cw init .
+```
+
+**Prerequisites**: Python 3.8+
+
+**Optional dependencies:**
+```bash
+pip install 'compound-wiki[auto]'      # Auto engine (file watcher + scheduler)
+pip install 'compound-wiki[anthropic]' # Anthropic Claude support
+pip install 'compound-wiki[openai]'    # OpenAI GPT support
+pip install 'compound-wiki[mcp]'       # MCP protocol support
+pip install 'compound-wiki[all]'       # Everything
 ```
 
 ---
 
-## 💬 Core AI Interaction Commands
+## 🧬 Memory Core — AI Conversation Auto-Memory (v2.0)
 
-### INGEST: Process Raw Materials
+> **This is Compound Wiki's core capability.** From "human feeds materials → AI organizes" to **"AI conversation automatically produces memories, fully transparent"**.
 
-> Send this to your AI Agent:
-
-```
-Please read all new files in the raw/ directory.
-Following the rules in schema/CLAUDE.md:
-1. Extract core concepts → Create pages in wiki/concept/
-2. Extract entities involved → Create pages in wiki/entity/
-3. Build [[double-link]] connections between pages
-4. Update wiki/index.md
-5. Record this operation in wiki/changelog.md
-Each page must include complete frontmatter metadata.
-Use templates in schema/templates/ as format reference.
-```
-
-### QUERY: Ask Questions Based on Knowledge Base
+### The Problem It Solves
 
 ```
-Please answer the following question based on wiki/ contents:
-[Your Question]
+❌ Traditional:
+   You chat with AI → Context lost after chat → Re-explain background next time
+   100th conversation = 1st experience (AI remembers nothing)
 
-Requirements:
-- Cite specific Wiki pages as sources
-- Follow [[double-links]] to find related info
-- If information is insufficient, identify what's missing
+✅ Memory Core (v2.0):
+   You chat with AI → Daemon auto-extracts knowledge → Deduplicates → Stores in Wiki
+   Next conversation auto-references existing knowledge → Better answers
+   100th conversation = AI knows your project/preferences/history better than you
 ```
 
-### LINT: Health Audit
+### 3-Line Integration
+
+```python
+from cw_daemon.client import CwClient, AutoRemember
+
+# Pattern A: Decorator style (recommended)
+auto = AutoRemember(agent_id="my-bot")
+
+reply = await my_llm.chat(user_msg)
+await auto(user_msg, reply)   # ← Auto extract → dedup → write → update index
+
+# Pattern B: Manual call
+client = CwClient()
+await client.remember(user_msg, ai_response)
+
+# Pattern C: Any language that can send HTTP
+POST http://localhost:9877/hook
+{"user_message": "...", "ai_response": "..."}
+```
+
+### What Gets Auto-Extracted?
+
+| Type | Example | Value |
+|------|---------|-------|
+| ✅ **Decision** | "Chose Redis over Memcached" | Record decision rationale |
+| 🎯 **Preference** | "User likes concise comments" | AI learns your style over time |
+| 📌 **Fact** | "Project uses Python 3.11+" | Build context foundation |
+| 💡 **Concept** | "CQRS separates read/write" | Accumulate technical knowledge |
+| 🏷️ **Entity** | "Team Alpha, Project Beta" | Build relationship network |
+
+### Smart Deduplication (v2.0 Fix)
+
+v2.0 rewrote the entire deduplication pipeline:
 
 ```
-Please run a LINT check on the entire wiki/ directory:
-1. Check for contradictory information
-2. Find orphaned pages without links
-3. Identify conclusions lacking source citations
-4. List referenced-but-not-yet-created pages
-5. Provide improvement suggestions and output report
-```
-
-### SYNTHESIS: Create Comparative Analysis
-
-```
-Based on wiki/ content about [Topic A] and [Topic B],
-create a comparative analysis page in wiki/synthesis/.
-Use the synthesis page template format. Provide clear conclusions and recommendations.
+v1.x issue: Same fact "Using TDD" was written 4 times
+v2.0 solution:
+  ① ThrottleController — Don't reprocess identical content within 10s window
+  ② Deduplicator — Similarity >85% auto-merge
+  ③ _add_fact_to_page — Scan existing content before writing, skip duplicates
+  ④ Merge mode — Both MCP and MC write paths unified as incremental merge
 ```
 
 ---
@@ -314,30 +310,17 @@ Use the synthesis page template format. Provide clear conclusions and recommenda
 
 ### Why "Compound"?
 
-Traditional knowledge management is **linear** — you get out what you put in.
-
+Traditional KM is **linear** — input equals output.
 Compound Wiki is **exponential** — every operation creates cascading value:
 
 ```
-Round 1: Import material A
-  → Create page A
-  → +1 page
+Round 1: Import material A → Create page A → +1 page
 
-Round 2: Import material B  
-  → Create page B
-  → Update page A (establish A↔B link)
-  → +2 operations (1 create + 1 update)
+Round 2: Import material B → Create page B → Update page A (A↔B link) → +2 ops
 
-Round 3: Q&A query X
-  → Generate answer
-  → Archive as new synthesis page S
-  → Update citation chains between A, B, S
-  → +N operations
+Round 3: Q&A query X → Generate answer → Archive as synthesis S → Update citation chain → +N ops
 
-Round 4: LINT audit
-  → Find contradictions and fix them
-  → Overall quality improves
-  → All future queries benefit
+Round 4: LINT audit → Fix contradictions → Overall quality improves → All future queries benefit
 ```
 
 ### Value Multiplication Per Operation
@@ -345,84 +328,21 @@ Round 4: LINT audit
 | Operation | Direct Output | Indirect Value Add |
 |-----------|--------------|-------------------|
 | Import 1 material | 1 new Wiki page | Auto-update 10~15 related pages |
-| 1 Q&A session | Get answer | Can be archived as synthesis/comparison page |
-| 1 LINT check | Fix issues | Overall knowledge base accuracy improves |
-| Time passes | - | Knowledge network density keeps increasing |
+| 1 Q&A session | Get answer | Archive as synthesis/comparison page |
+| 1 LINT check | Fix issues | Overall accuracy improves |
+| Time passes | - | Network density keeps increasing |
 
 ---
 
-## 🧩 Plugin System
-
-### More Than Scripts — A True Plugin Architecture
-
-Compound Wiki v1.2 introduces a complete **plugin-based architecture** with multiple data ingestion channels. **You're no longer limited to manually dropping files into `raw/`.**
-
-```
-┌──────────────────────────────────────────────────────┐
-│                   Data Input Layer                     │
-│                                                      │
-│  🌐 Browser Btn   📋 Clipboard    📧 Email           │
-│  🤖 Telegram      💬 Discord      📡 RSS Feeds       │
-│  🔌 REST API      🪝 Webhook     📁 Drag & Drop      │
-└──────────┬─────────┬───────────────┬──────────────────┘
-           └─────────┴───────────────┘
-                       ▼
-              ┌──────────────────┐
-              │  SourceRegistry  │  Unified source hub
-              └────────┬─────────┘
-                       ▼
-              ┌──────────────────┐
-              │  MCP Server      │  Standard AI tool protocol
-              │  (cw_ingest,     │  Works with Claude/Cursor/
-              │   cw_query, ...) │  Copilot out of the box
-              └────────┬─────────┘
-                       ▼
-              ┌──────────────────┐
-              │  Wiki Engine     │  Extract → Page → Link → Index
-              └────────┬─────────┘
-                       ▼
-        ┌──────────────┴──────────────┐
-        │  Obsidian / Logseq / Web UI │
-        └─────────────────────────────┘
-```
-
-### MCP Server (Core Plugin)
-
-**MCP (Model Context Protocol)** is the standard AI plugin protocol. Compound Wiki exposes your knowledge base through MCP so any AI tool can operate it directly.
-
-**Installation (Claude Code example):**
-
-```json
-// .mcp.json or Claude config
-{
-  "mcpServers": {
-    "compound-wiki": {
-      "command": "python",
-      "args": ["plugins/mcp_server.py"],
-      "env": { "CW_PROJECT_DIR": "${workspaceFolder}" }
-    }
-  }
-}
-```
-
-After installation, use naturally in conversation:
-
-| You Say | AI Calls | Effect |
-|---------|----------|--------|
-| "Save this article to my knowledge base" | `cw_ingest` | Auto-extract, create pages, build links |
-| "What does my Wiki have about RAG?" | `cw_query` | Structured search + citations |
-| "Run a health check on my Wiki" | `cw_lint` | Full health report |
-| "How big is my knowledge base now?" | `cw_stats` | Statistics dashboard |
-
-**Supported Platforms:** ✅ Claude Desktop ✅ Claude Code ✅ Cursor ✅ GitHub Copilot ✅ Any MCP-compatible tool
+## 🧩 Plugin System & Data Sources
 
 ### 9 Data Source Plugins
 
 | Plugin | How to Feed | Config |
 |--------|-------------|--------|
 | **📁 File Watcher** | Drop files into `raw/` | Enabled by default |
-| **🌐 Browser Clipper** | One-click save from browser | Visit `http://localhost:9877/bookmarklet.js` |
-| **📋 Clipboard Monitor** | Auto-capture copied text | Set `min_length: 50` |
+| **🌐 Browser Clipper** | One-click save from browser | Visit bookmarklet.js |
+| **📋 Clipboard Monitor** | Auto-capture copied text | Set `min_length` filter |
 | **📧 Email Watcher** | Auto-extract from IMAP inbox | Gmail/Outlook/any IMAP |
 | **📡 RSS Reader** | Subscribe blogs/arXiv auto-import | Multi-feed + tags |
 | **🤖 Telegram Bot** | Forward messages to bot | Create via @BotFather |
@@ -430,267 +350,132 @@ After installation, use naturally in conversation:
 | **🔌 REST API** | POST JSON to local endpoint | Programmatic batch import |
 | **🪝 Webhook** | Receive Zapier/IFTTT/n8n pushes | Workflow automation |
 
-> All plugins configured in `plugins/config.json`. Set `"enabled": true` to activate.
-
-### 3 Output Adapters
+### Output Adapters
 
 | Adapter | Usage |
 |---------|-------|
-| **Obsidian** | Open project folder in Obsidian → get graph view, backlinks, search for free |
+| **Obsidian** | Open `wiki/` directory → graph view, backlinks, full-text search |
 | **Logseq** | One-click export to Logseq graph format |
-| **Web Dashboard** | Lightweight web browsing interface (optional) |
+| **Web Dashboard** | Lightweight web UI (optional) |
 
 ---
 
-## 🛠️ Built-in Tools
+## 🛠️ CLI Commands
 
 ```bash
-# Initialize new project
-python scripts/cw_tool.py init [path]
+# === Knowledge Base ===
+cw init my-wiki              # Initialize new KB
+cw ingest                    # Process raw/ materials → Wiki
+cw query "What is RAG?"     # Query knowledge base
+cw stats                     # Statistics dashboard
+cw lint                      # LINT health check
+cw check-raw                 # View unprocessed raw/ files
+cw status                    # Runtime overview
 
-# Wiki health LINT check
-python scripts/cw_tool.py lint [path]
+# === Daemon Management (v2.0) ===
+cw daemon start [--wiki ./wiki] [--port 9877]   # Start daemon
+cw daemon stop                                      # Stop gracefully
+cw daemon restart                                   # Restart
+cw daemon status                                    # View status
+cw daemon ping                                      # Quick health check
 
-# Statistics
-python scripts/cw_tool.py stats [path]
-
-# Check unprocessed files in raw/
-python scripts/cw_tool.py check-raw [path]
-
-# Windows shortcut
-cw.bat lint
-cw.bat stats
-
-# macOS/Linux shortcut
-chmod +x scripts/cw.sh
-./cw.sh lint
-./cw.sh stats
+# === Other ===
+cw version                  # Show version
 ```
 
 ---
 
 ## 📖 Use Cases
 
-### Use Case 1: Personal Learning & Academic Research
-
-```bash
-# Paper reading
-→ Convert PDF papers to MD, drop into raw/
-→ AI auto-extracts concepts, methods, results
-→ Forms domain knowledge graph
-→ New papers auto-link to existing knowledge as they arrive
-
-# Skill learning
-→ Collect tutorials, docs, practice notes
-→ AI organizes into systematic learning paths
-→ Auto-tags prerequisites and next-level directions
-```
+### Use Case 1: Personal Learning & Research
+Papers/tutorials → `raw/` → AI extracts concepts → Domain graph forms → New material auto-links to existing
 
 ### Use Case 2: Content Creation & Industry Research
-
-```bash
-# Competitor analysis
-→ Drop competitor materials in
-→ AI generates comparison pages (wiki/synthesis/)
-→ New competitors auto-join comparison matrix
-
-# Content creator's素材 library
-→ Continuous intake of materials, inspiration, trending topics
-→ AI categorizes by topic with cross-references
-→ Quick retrieval when writing
-```
+Competitor materials → AI generates comparison pages → New entrants join matrix → Quick retrieval when writing
 
 ### Use Case 3: Team Knowledge Management
+Shared repo → Each member feeds domain material → AI compiles unified team Wiki → New hires onboard fast
 
-```bash
-# Git collaboration
-→ Team shares one compound-wiki repo
-→ Each person drops domain-specific materials into raw/
-→ AI compiles unified team Wiki
-→ New hires onboard fast by reading the Wiki
+### Use Case 4: AI Agent Long-Term Memory ⭐
+**This is v2.0's killer feature.** After starting the Daemon, every conversation turn from any Agent gets auto-extracted:
+
+```python
+# Add 3 lines to your Agent's main loop
+from cw_daemon.client import AutoRemember
+auto = AutoRemember(agent_id="my-agent")
+
+# After each conversation turn:
+reply = await agent.respond(user_message)
+await auto(user_message, reply)  # ✅ Auto-memory
 ```
 
-### Use Case 4: AI Agent Long-term Memory
-
-```bash
-# As persistent memory layer for Claude Code / Cursor / etc.
-→ Write important conversation decisions to outputs/
-→ Periodically distill outputs/ highlights back into wiki/
-→ Agent auto-loads relevant context in next session
-→ Achieves "cross-session memory"
-```
+Supported Agents: OpenClaw / Hermes / Any Python Agent / curl / anything that speaks HTTP
 
 ---
 
 ## ❓ FAQ
 
 ### Q: Is this software or methodology?
-
-**Both.** We provide a complete methodology specification (`schema/CLAUDE.md`) + project template + utility tools. The core "compilation" work is done by AI Agents — no specific software dependency.
+**Both.** We provide a complete solution: Daemon + methodology spec (`schema/CLAUDE.md`) + project template + SDK. Core extraction work is done by AI — no model lock-in.
 
 ### Q: Does it conflict with Obsidian?
-
-**Not at all — highly complementary.** Obsidian handles visual editing of Markdown files and graphical display of the double-link network; Compound Wiki defines how AI automatically organizes and maintains those Markdown files. You can open the `wiki/` directory in Obsidian for the best experience.
+**Not at all — highly complementary.** Obsidian handles Markdown visualization; Compound Wiki defines how AI auto-organizes those files. Open `wiki/` in Obsidian for the best experience.
 
 ### Q: What about AI hallucinations?
-
-Four layers of protection:
-
-1. **Raw materials are read-only and traceable** — Every Wiki conclusion cites which `raw/` file and section it came from
-2. **LINT periodic audits** — Auto-detect contradictory info and uncited content
-3. **Incremental imports for easy verification** — Import small batches for manual spot-checking
-4. **Uncertain content explicitly marked** — Inferred information uses cautious wording with separate pending-verification items
-
-### Q: Does it support PDF / images?
-
-- Prefer Markdown / plain text format for raw materials
-- PDF can be pre-converted to text, or extracted by multimodal LLM directly
-- Images can be recognized by multimodal models and stored as text descriptions in `raw/`
-- Future versions may integrate more format preprocessing
-
-### Q: What about retrieval efficiency at scale?
-
-- Small scale (<1000 pages): `index.md` index + `[[double-link]]` navigation = extremely fast
-- Large scale: Split into multiple Wiki sub-domains by field, or pair with lightweight vector search
-- Design philosophy: **prioritize quality and maintainability first**
+Four layers of protection: ① Raw materials are traceable ② LINT periodic audits ③ Incremental imports for verification ④ Uncertain content explicitly marked
 
 ### Q: Can I use it offline?
-
-**Absolutely.** Local model (Ollama/Llama/Qwen/etc.) + local files = fully offline private knowledge base. No cloud service required.
+**Yes.** Local model (Ollama/Qwen/etc.) + local files = fully offline private knowledge base.
 
 ### Q: How does this compare with RAG?
 
 | | RAG | Compound Wiki |
 |--|-----|---------------|
-| Knowledge form | Raw doc chunks + vector index | Structured Wiki pages + double-link network |
-| Query method | Re-retrieve + re-synthesize each time | Directly read already-structured content |
+| Knowledge form | Doc chunks + vector index | Structured Wiki pages + double-link network |
+| Query method | Re-retrieve + re-synthesize each time | Read already-structured content directly |
 | Knowledge persistence | None, use-and-discard | Yes, iterates and persists forever |
-| Link strength | Weak (relies on vector similarity) | Strong (AI builds semantic links actively) |
 | Long-term value | Low | **Compound growth** |
-| Best for | Dynamic massive documents | **Medium-scale deep knowledge systems** |
 
-They can also complement each other: Compound Wiki for core knowledge, RAG for massive temporary reference docs.
-
----
-
-## 📂 Detailed Project Structure
-
-```
-compound-wiki/
-├── schema/                    # ⭐ Most important! Rule definitions
-│   ├── CLAUDE.md             # AI behavior spec (must-read)
-│   ├── PERSPECTIVE.example.md # User perspective template (fill as needed)
-│   └── templates/            # Wiki page format templates
-│       ├── concept.md        # Concept page template
-│       ├── entity.md         # Entity page template
-│       └── synthesis.md      # Synthesis page template
-│
-├── wiki/                      # AI-generated knowledge base (do not edit manually)
-│   ├── index.md              # Global index (AI-maintained)
-│   ├── changelog.md          # Change log (AI-maintained)
-│   ├── concept/              # Concept pages
-│   ├── entity/               # Entity pages
-│   └── synthesis/            # Synthesis pages
-│
-├── raw/                       # Raw material drop zone (add only, no delete/edit)
-│
-├── outputs/                   # AI-generated Q&A and analysis reports
-│
-├── scripts/                   # Utility tools
-│   ├── cw_tool.py            # Main tool (Python 3.6+)
-│   ├── cw.bat                # Windows launcher
-│   └── cw.sh                 # Unix launcher
-│
-├── examples/                  # Examples and tutorials
-│   └── raw-sample/           # Sample raw materials
-│
-├── README.md                  # Chinese documentation
-├── README.en.md               # English documentation (this file)
-└── LICENSE                    # MIT open source license
-```
+They complement each other: Compound Wiki for core knowledge, RAG for massive temporary reference docs.
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how to participate:
+Contributions are welcome!
 
-1. **Fork** this repository
+1. **Fork** this repo
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
+3. Commit (`git commit -m 'Add amazing feature'`)
+4. Push (`git push origin feature/amazing-feature`)
 5. Submit a Pull Request
 
-### Especially Welcome Contributions
+### Especially Welcome
 
-- 🌐 **Multilingual CLAUDE.md** — Translate/adapt behavior specs for different languages
-- 🎨 **Better Templates** — Design more professional Wiki page templates
-- 🔌 **More Tools** — Auto-import scripts, Obsidian plugins, etc.
-- 📖 **Example Knowledge Bases** — Share publicly built Wikis as demos
-- 🐛 **Bug Fixes** — Fix utility tool issues
-
----
-
-## 🙏 Acknowledgments
-
-- **[Andrej Karpathy](https://karpathy.ai/)** — Original author of the LLM-Wiki concept
-- **[OpenClaw / ClawdBot](https://github.com/openclaw)** — Three-layer memory system open source implementation
-- All developers and researchers exploring the [AI Memory](https://github.com/XiaomingX/awesome-ai-memory) space
+- 🌐 Multilingual CLAUDE.md
+- 🎨 Better templates
+- 🔌 More Agent adapters
+- 📖 Example knowledge bases
+- 🐛 Bug fixes
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](./LICENSE).
-
-```
-MIT License
-
-Copyright (c) 2026 Compound Wiki Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-```
+MIT License © 2026 Compound Wiki Contributors
 
 ---
 
 ## 🙏 Acknowledgments & Inspiration
 
-This project was not created in a vacuum — it stands on the shoulders of giants. Below are the core sources we directly drew inspiration from and built upon:
-
-### Primary Sources of Inspiration
-
 | Source | Contribution | Link |
 |--------|-------------|------|
-| **Andrej Karpathy — LLM-Wiki** | **Core architectural inspiration**. Karpathy (former OpenAI founding member, former Tesla AI Director) proposed the "three folders + one rule file" knowledge management paradigm in April 2026 — the `raw/wiki/schema` three-layer structure, bi-directional linking mechanism, and AI-full-custody maintenance philosophy form the bedrock of this project. | [Original Gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) |
-| **OpenClaw / ClawdBot — Three-Layer Memory System** | **Memory layering design**. Its `Knowledge Graph + Daily Notes + Tacit Knowledge` three-layer memory model, atomic fact "supersede rather than delete" strategy, and Hooks auto-trigger mechanism deeply influenced our Wiki page categorization and LINT audit design. | [GitHub 150k+ Stars](https://github.com/openclaw/clawdbot) |
-| **老金 (Alibaba Cloud) — AI Auto-Memory System** | **Engineering practice reference**. The Chinese interpretation and implementation of OpenClaw's memory system, including directory structures, Hook script code, and data templates, provided a practical implementation path for this project. | [Article (CN)](https://developer.aliyun.com/article/1710321) |
-| **一泽 (53AI) — Compound Effect of AI Memory Assets** | **Philosophical inspiration**. Proposed the concept of AI memory assets from a humanistic perspective, emphasizing the long-term compound value of conversations, thoughts, and insights, as well as the healing value of "being deeply seen." | [Article (CN)](https://www.53ai.com/news/gerentixiao/202512031786.html) |
+| **Andrej Karpathy — LLM-Wiki** | **Core architectural inspiration**. The "three folders + one rule file" paradigm is this project's foundation | [Original Gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) |
+| **OpenClaw / ClawdBot** | **Memory layering design**. Three-layer model and Hooks mechanism deeply influenced our architecture | [GitHub](https://github.com/openclaw/clawdbot) |
+| **老金 (Alibaba Cloud)** | **Engineering practice reference** | [Article (CN)](https://developer.aliyun.com/article/1710321) |
+| **一泽 (53AI)** | **Philosophical inspiration**. AI memory assets & compound value | [Article (CN)](https://www.53ai.com/news/gerentixiao/2025120317865.html) |
 
-### Conceptual Lineage
-
-- **RAG (Retrieval-Augmented Generation)** — The limitations of traditional RAG (retrieving from scratch every time, no accumulation) is exactly what LLM-Wiki set out to solve
-- **Obsidian Bi-directional Linking** — The `[[wiki-link]]` format draws from Obsidian/Zettelkasten's knowledge network philosophy
-- **Zettelkasten (Slipbox)** — Permanent notes, atomicity, and interconnection principles
-
-### Interpretive Articles
-
-The following articles played important roles in interpreting and spreading these ideas:
-
-| Article | Source |
-|---------|--------|
-| [Karpathy教你搭「第二大脑」：三个文件夹就够了 (CN)](https://www.woshipm.com/ai/6372020.html) | Woshipm (人人都是产品经理) |
-| [LLM-Wiki: AI-Driven Self-Evolving Personal Knowledge Base (CN)](https://www.aipuzi.cn/ai-news/llm-wiki.html) | AIPuzi (AI铺子) |
-| [Your AI Forgets Every Time: Use Three-Layer Memory for Compound Growth (CN)](https://zhuanlan.zhihu.com/p/2021889682921768658) | Zhihu |
-
-> ⚠️ **Disclaimer**: This project is an **open-source universal Agent memory system framework** that integrates ideas from the above sources with general-purpose adaptations. All original concepts belong to their respective authors. We respect every piece of original work. If any attribution is missing, please open an Issue to let us know.
+> ⚠️ **Disclaimer**: This project is an open-source universal Agent memory system framework integrating ideas from the above sources with general-purpose adaptations. All original concepts belong to their respective authors.
 
 ---
 

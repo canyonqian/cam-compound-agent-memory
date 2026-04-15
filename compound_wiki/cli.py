@@ -613,6 +613,7 @@ def main():
         "check-raw": lambda: cmd_check_raw(rest[0] if rest else None),
         "collect": lambda: cmd_collect(rest[0] if rest else ""),
         "start": lambda: cmd_start(),
+        "daemon": lambda: cmd_daemon(),  # v2 新增: 守护进程管理
         "--help": cmd_help,
         "-h": cmd_help,
         "version": cmd_version,
@@ -690,6 +691,92 @@ def cmd_start():
     print(f"  {C.DIM}pip install 'compound-wiki[auto]'${C.END}")
     print(f"\n  或者直接运行:")
     print(f"  {C.DIM}python auto/agent.py start{C.END}")
+
+
+# ── Daemon 子命令 (v2 新增) ────────────────────────────────
+
+def cmd_daemon():
+    """Daemon 命令路由 — cw daemon [start|stop|status]"""
+    from . import cli_daemon
+    import sys
+
+    sub_args = []
+    # Find "daemon" in args and get what comes after it
+    found = False
+    for a in sys.argv[1:]:
+        if not found:
+            if a.lower() == "daemon":
+                found = True
+            continue
+        sub_args.append(a)
+
+    if not sub_args or sub_args[0].startswith("-"):
+        cmd_daemon_help()
+        return
+
+    sub_cmd = sub_args[0].lower()
+    rest_args = sub_args[1:]
+
+    dispatch = {
+        "start": lambda: cli_daemon.cmd_daemon_start(rest_args),
+        "stop": lambda: cli_daemon.cmd_daemon_stop(),
+        "restart": lambda: cli_daemon.cmd_daemon_restart(rest_args),
+        "status": lambda: cli_daemon.cmd_daemon_status(),
+        "ping": lambda: cli_daemon.cmd_daemon_ping(),
+        "--help": cmd_daemon_help,
+        "-h": cmd_daemon_help,
+    }
+
+    handler = dispatch.get(sub_cmd)
+    if handler:
+        handler()
+    else:
+        print(f"{C.RED}未知 daemon 命令: {sub_cmd}{C.END}")
+        print(f"可用: start | stop | restart | status | ping")
+        sys.exit(1)
+
+
+def cmd_daemon_help():
+    print(f"""{C.BOLD}{C.BLUE}🔧 Compound Wiki Daemon v2.0.0{C.END}
+{C.BOLD}   全自动通用 Agent 记忆守护进程{C.END}
+
+{C.BOLD}用法:{C.END}  {C.CYAN}cw daemon <命令> [参数]{C.END}
+
+{C.BOLD}核心命令:{C.END}
+  cw daemon start [--wiki ./wiki] [--port 9877]
+                       启动守护进程（后台运行）
+  cw daemon stop          停止守护进程
+  cw daemon restart       重启守护进程
+  cw daemon status        查看运行状态
+  cw daemon ping          快速检查是否在线
+
+{C.BOLD}参数:{C.END}
+  --wiki <路径>           Wiki 目录（默认: ./wiki）
+  --port <端口>           API 端口（默认: 9877）
+  --host <地址>           绑定地址（默认: 127.0.0.1）
+  --llm-provider <名称>   LLM 提供商 openai|anthropic|ollama
+  --llm-model <模型名>    提取用模型（默认: gpt-4o-mini）
+  --config <文件>         配置文件路径
+
+{C.BOLD}Agent 集成示例:{C.END}
+  # Python Agent (3行)
+  >>> from cw_daemon.client import CwClient
+  >>> client = CwClient()
+  >>> await client.remember(user_msg, ai_response, agent_id="my-bot")
+
+  # Shell / curl (1行)
+  $ curl -X POST http://localhost:9877/hook -d '{{"user_message":"...", "ai_response":"..."}}'
+
+  # Hermes / OpenClaw hook (3行)
+  requests.post("http://localhost:9877/hook", json={...})
+
+{C.BOLD}API 端点:{C.END}
+  POST /hook              发送对话 → 自动提取+写入
+  POST /ingest            手动摄入内容
+  GET  /query?q=...       查询知识库
+  GET  /stats             统计信息
+  GET  /health            健康检查
+""")
 
 
 if __name__ == "__main__":

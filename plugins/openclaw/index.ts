@@ -1,17 +1,19 @@
 /**
- * Compound Wiki — OpenClaw Plugin v2
+ * Compound Wiki — OpenClaw Plugin v3 (Daemon Mode)
  *
- * 替代 memory-guard 的下一代 AI 记忆引擎
+ * v3 改动：不再自己调用 Python 子进程做提取/写入，
+ * 而是把对话数据发给 cw-daemon HTTP API，让 daemon 统一处理。
  *
  * Hook 点：
- *   before_prompt_build → 查询 Compound Wiki 相关记忆 → prependSystemContext 注入
- *   message_received    → 缓存最近用户消息
- *   llm_output          → 调用 Compound Wiki 提取知识 → 存入 Wiki
+ *   before_prompt_build → 查询 daemon 的 /query → 注入上下文
+ *   message_received    → 缓存用户消息（给 llm_output 用）
+ *   llm_output          → POST /hook 发给 daemon 自动提取
  *
- * 架构优势（vs 旧版 memory-guard）：
- *   - 零 API Key：用 Host Agent 自身的 LLM 能力做提取
- *   - 结构化存储：Markdown Wiki + 索引，人类可读
- *   - 规则引擎：内置提取规则 + Agent 自由发挥
+ * 优势：
+ *   - 插件从 ~270 行 → ~80 行
+ *   - 不再依赖 Python 子进程调用
+ *   - 去重/节流/写入全部由 daemon 处理，不会重复
+ *   - 和 Hermes / Claude Code 共享同一套逻辑
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -20,27 +22,30 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 // 配置
 // ============================================================
 
-const DEFAULT_WIKI_PATH = process.env.CW_PROJECT_DIR || process.cwd();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5分钟
+const DAEMON_URL = process.env.CW_DAEMON_URL || "http://127.0.0.1:9877";
+const DAEMON_TIMEOUT_MS = 8000; // 8s timeout for daemon calls
 
 function resolveConfig(cfg: Record<string, unknown>): {
   wikiPath: string;
   injectOnPrompt: boolean;
   extractOnOutput: boolean;
+  daemonUrl: string;
 } {
   return {
-    wikiPath: ((cfg.wikiPath as string) || DEFAULT_WIKI_PATH).replace(/\/+$/, ""),
+    wikiPath: ((cfg.wikiPath as string) || process.env.CW_PROJECT_DIR || process.cwd()).replace(/\/+$/, ""),
     injectOnPrompt: cfg.injectOnPrompt !== false,
     extractOnOutput: cfg.extractOnOutput !== false,
+    daemonUrl: (cfg.daemonUrl as string) || DAEMON_URL,
   };
 }
 
 // ============================================================
-// 用户消息缓存（模块级单例）
+// 用户消息缓存（供 llm_output 组装完整对话）
 // ============================================================
 
 let _cachedUserMsg = "";
 let _cachedUserTs = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 function getCachedUserMsg(): string {
   if (!_cachedUserMsg || Date.now() - _cachedUserTs > CACHE_TTL_MS) return "";
@@ -48,8 +53,10 @@ function getCachedUserMsg(): string {
 }
 
 function setCachedUserMsg(msg: string): void {
-  _cachedUserMsg = msg;
-  _cachedUserTs = Date.now();
+  if (msg && msg.length > 10) { // Skip very short messages
+    _cachedUserMsg = msg;
+    _cachedUserTs = Date.now();
+  }
 }
 
 function clearCachedUserMsg(): string {
@@ -60,80 +67,70 @@ function clearCachedUserMsg(): string {
 }
 
 // ============================================================
-// Compound Wiki MCP Client（通过子进程调用）
+// Daemon HTTP Client (pure HTTP, no Python subprocess)
 // ============================================================
 
-interface CwResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
+interface DaemonResponse {
+  success?: boolean;
+  status: string;
+  facts_extracted?: number;
+  facts_written?: number;
+  message?: string;
+  processing_time_ms?: number;
+  throttled?: boolean;
+  results_found?: number;
+  matches?: Array<{
+    page: string;
+    name: string;
+    preview: string;
+    content_snippet: string;
+  }>;
+  question?: string;
+  error?: string;
+  [key: string]: unknown;
 }
 
-/**
- * 通过 Python 子进程调用 Compound Wiki MCP 工具
- */
-async function callCwTool(
-  wikiPath: string,
-  toolName: string,
-  args: Record<string, unknown>,
-): Promise<CwResult> {
+async function daemonPost(path: string, body: Record<string, unknown>, url: string): Promise<DaemonResponse | null> {
   try {
-    const { execFileSync } = await import("child_process");
-
-    // 写临时 JSON 文件传递参数（避免命令行参数转义问题）
-    const fs = await import("fs");
-    const os = await import("os");
-    const tmpFile = os.tmpdir() + `/cw_call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`;
-    fs.writeFileSync(tmpFile, JSON.stringify({ tool: toolName, args }));
-
-    const result = execFileSync(
-      "python3",
-      [
-        "-c",
-        `import json, sys
-sys.path.insert(0, "${wikiPath}")
-from plugins.mcp_server import call_tool as _call
-import asyncio
-
-async def main():
-    with open("${tmpFile}") as f:
-        req = json.load(f)
-    result = await _call(req["tool"], req["args"])
-    out = []
-    for c in result.content:
-        out.append({"type": c.type, "text": c.text})
-    print(json.dumps({"content": out, "isError": getattr(result, "isError", False)}))
-
-asyncio.run(main())
-`,
-      ],
-      {
-        timeout: 30000,
-        env: process.env,
-        cwd: wikiPath,
-        encoding: "utf-8",
-        maxBuffer: 1024 * 1024,
-      },
-    );
-
-    // 清理临时文件
-    try { fs.unlinkSync(tmpFile); } catch (_) {}
-
-    return JSON.parse(result) as CwResult;
+    const resp = await fetch(`${url}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(DAEMON_TIMEOUT_MS),
+    });
+    
+    if (!resp.ok) {
+      console.warn(`[compound-wiki] daemon ${path} returned ${resp.status}`);
+      return null;
+    }
+    
+    return await resp.json() as DaemonResponse;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[compound-wiki] ${toolName} error: ${msg}`);
-    return {
-      content: [{ type: "text", text: "" }],
-      isError: true,
-    };
+    console.warn(`[compound-wiki] daemon ${path} unreachable: ${msg}`);
+    return null; // Graceful degradation — daemon offline is not an error
+  }
+}
+
+async function daemonGet(path: string, params: Record<string, string>, url: string): Promise<DaemonResponse | null> {
+  try {
+    const qs = new URLSearchParams(params).toString();
+    const resp = await fetch(`${url}${path}?${qs}`, {
+      signal: AbortSignal.timeout(DAEMON_TIMEOUT_MS),
+    });
+    
+    if (!resp.ok) return null;
+    return await resp.json() as DaemonResponse;
+  } catch (err) {
+    return null; // Graceful degradation
   }
 }
 
 // ============================================================
-// Hook 实现
+// Hook 实现 — 全部委托给 daemon
 // ============================================================
 
-/** 从 Wiki 中检索相关记忆并注入到 system prompt */
+/** 从 daemon 查询相关记忆并注入到 system prompt */
 export async function before_prompt_build(
   ctx: OpenClawPluginApi & { userMessage?: string },
 ): Promise<void> {
@@ -143,57 +140,55 @@ export async function before_prompt_build(
     const config = resolveConfig(ctx.config);
     if (!config.injectOnPrompt) return;
 
-    // 用用户消息的前 200 字符作为查询关键词
-    const query = ctx.userMessage.slice(0, 200);
+    const result = await daemonGet("/query", {
+      q: ctx.userMessage.slice(0, 200),
+      top_k: "5",
+    }, config.daemonUrl);
 
-    const result = await callCwTool(config.wikiPath, "cw_query", {
-      query,
-      scope: "all",
-      max_results: 5,
-      format: "context",
-    });
+    if (!result || !result.matches?.length) return;
 
-    if (result.isError || !result.content?.[0]?.text) return;
-
-    const memoriesText = result.content[0].text.trim();
-    if (!memoriesText || memoriesText === "_No matching pages found._") return;
-
-    // 注入到 system prompt 前面
-    const contextBlock = [
+    // Build context block from matches
+    const contextLines: string[] = [
       `## 📚 Compound Wiki Memory`,
       "",
       `_The following knowledge was retrieved from your persistent memory:_`,
       "",
-      memoriesText,
-      "",
-      "---",
-    ].join("\n");
+    ];
+
+    for (const m of result.matches) {
+      contextLines.push(`### ${m.name.replace(/-/g, " ")}`);
+      contextLines.push("");
+      contextLines.push(m.content_snippet);
+      contextLines.push("");
+    }
+
+    contextLines.push("---");
+
+    const contextBlock = contextLines.join("\n");
 
     if (typeof ctx.prependSystemContext === "function") {
       ctx.prependSystemContext(contextBlock);
     }
 
     console.log(
-      `[compound-wiki] Injected ${(memoriesText.match(/\n/g) || []).length} lines of context`,
+      `[compound-wiki] Injected ${result.matches.length} pages from daemon`,
     );
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[compound-wiki] before_prompt_build error: ${msg}`);
-  }
-}
-
-/** 缓存用户消息，供 llm_output 提取使用 */
-export async function message_received(
-  ctx: OpenClawPluginApi & { userMessage?: string },
-): Promise<void> {
-  try {
-    if (ctx.userMessage && ctx.userMessage.length > 10) {
-      setCachedUserMsg(ctx.userMessage);
-    }
   } catch (_) {}
 }
 
-/** 从 AI 回复中自动摄入内容 + 提取知识 */
+/** 缓存用户消息 */
+export async function message_received(
+  ctx: OpenClawPluginApi & { userMessage?: string },
+): Promise<void> {
+  setCachedUserMsg(ctx.userMessage || "");
+}
+
+/**
+ * 核心Hook：把完整对话发给 daemon，daemon 自动完成：
+ *   提取 → 去重 → 写入 → 更新索引
+ *
+ * 这一行替代了原来整个 llm_output 函数的复杂逻辑。
+ */
 export async function llm_output(
   ctx: OpenClawPluginApi & { aiResponse?: string },
 ): Promise<void> {
@@ -201,48 +196,49 @@ export async function llm_output(
     const config = resolveConfig(ctx.config);
     if (!config.extractOnOutput) return;
 
-    const userMsg = clearCachedUserMsg();
     const aiResponse = ctx.aiResponse;
     if (!aiResponse || aiResponse.length < 20) return;
 
-    // Step 1: 先把完整对话存为 raw 记录
-    const rawContent = [
-      `# Conversation Record — ${new Date().toISOString()}`,
-      "",
-      `## User`,
-      userMsg || "(unknown)",
-      "",
-      `## Assistant`,
-      aiResponse,
-    ].join("\n");
+    const userMsg = clearCachedUserMsg();
 
-    await callCwTool(config.wikiPath, "cw_ingest", {
-      content: rawContent,
-      source: "openclaw-conversation",
-      title: `chat-${Date.now()}`,
-    });
+    // POST to daemon — it handles everything:
+    // throttle, extract, dedup, write, index update
+    const result = await daemonPost("/hook", {
+      user_message: userMsg || "",
+      ai_response: aiResponse,
+      agent_id: "openclaw",
+      session_id: process.env.OPENCLAW_SESSION_ID || "",
+    }, config.daemonUrl);
 
-    // Step 2: 同时把 AI 回复单独作为知识源摄入
-    await callCwTool(config.wikiPath, "cw_ingest", {
-      content: aiResponse,
-      source: "openclaw-response",
-      title: `response-${Date.now()}`,
-    });
+    if (!result) {
+      // Daemon is offline — silently skip (not an error)
+      return;
+    }
 
-    console.log(`[compound-wiki] Ingested conversation (${rawContent.length} chars)`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[compound-wiki] llm_output error: ${msg}`);
-  }
+    if (result.throttled) {
+      console.log(`[compound-wiki] throttled by daemon: ${result.message}`);
+      return;
+    }
+
+    if (result.facts_written && result.facts_written > 0) {
+      console.log(
+        `[compound-wiki] 🧠 ${result.facts_written} new fact(s) stored via daemon (${result.processing_time_ms}ms)`,
+      );
+    } else if (result.status === "ok") {
+      console.log(`[compound-wiki] processed: ${result.message}`);
+    }
+  } catch (_) {}
 }
 
 // ============================================================
-// 注册函数
+// 注册
 // ============================================================
 
 export async function register(api: OpenClawPluginApi): Promise<void> {
   const config = resolveConfig(api.config);
-  console.log(`[compound-wiki] Plugin loaded | wiki=${config.wikiPath}`);
+  
+  console.log(`[compound-wiki] Plugin v3 loaded (daemon mode)`);
+  console.log(`[compound-wiki] daemon=${config.daemonUrl}`);
 
   api.registerHook("before_prompt_build", (ctx: unknown) =>
     before_prompt_build(ctx as Parameters<typeof before_prompt_build>[0]),
