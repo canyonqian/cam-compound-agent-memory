@@ -604,7 +604,10 @@ def main():
     rest = args[1:]
 
     dispatch = {
-        "init": lambda: cmd_init(rest[0] if rest else "."),
+        "init": lambda: cmd_init(
+            (rest[1] if len(rest) > 1 and rest[0] in ("--dir", "-d") else rest[0])
+            if rest else "."
+        ),
         "lint": lambda: cmd_lint(rest[0] if rest else None),
         "stats": lambda: cmd_stats(rest[0] if rest else None),
         "status": lambda: cmd_status(rest[0] if rest else None),
