@@ -745,7 +745,12 @@ def create_server(engine: CwEngine, host: str = "127.0.0.1",
     if HAS_FASTAPI:
         import uvicorn
 
-        coro = uvicorn.run(app, host=host, port=port, log_level="warning")
+        # Use uvicorn's Server API directly (not uvicorn.run which calls
+        # asyncio.run() internally — that fails when we're already in an
+        # event loop from _run.py's asyncio.run(main()))
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+        server = uvicorn.Server(config)
+        coro = server.serve()
         return app, coro
     else:
         # Fallback server
