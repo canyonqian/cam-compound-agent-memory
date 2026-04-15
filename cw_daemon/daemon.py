@@ -144,11 +144,18 @@ class DaemonManager:
 
         # Create server
         from .server import create_server
-        self._server, _ = create_server(
-            engine=self._engine,
-            host=self.config.host,
-            port=self.config.port,
-        )
+        self._uvicorn_server = None  # Created lazily in run_forever()
+        self._server_app = None
+
+        # Pre-create the app (for health checks before full startup)
+        if hasattr(create_server, '__module__'):
+            try:
+                from .server import HAS_FASTAPI, _engine_instance
+                if HAS_FASTAPI:
+                    from .server import app as fastapi_app
+                    self._server_app = fastapi_app
+            except Exception:
+                pass
 
         self._running = True
         logger.info(f"✅ Daemon started (PID {pid})")
@@ -181,33 +188,35 @@ class DaemonManager:
                 pass
 
         # If we have FastAPI + uvicorn, run it
-        from .server import HAS_FASTAPI, app
+        from .server import HAS_FASTAPI, app as fastapi_app
 
         if HAS_FASTAPI:
             import uvicorn
             config = uvicorn.Config(
-                app=app,
+                app=fastapi_app,
                 host=self.config.host,
                 port=self.config.port,
                 log_level="info",
             )
             server = uvicorn.Server(config)
+            self._uvicorn_server = server
 
             # Run uvicorn but also monitor shutdown event
-            async def _run_with_shutdown():
-                task = asyncio.create_task(server.serve())
+            # Note: asyncio.wait() requires Tasks, not coroutines!
+            serve_task = asyncio.create_task(server.serve())
+            shutdown_task = asyncio.create_task(self._shutdown_event.wait())
 
-                # Wait for either shutdown or server completion
-                done, pending = await asyncio.wait(
-                    [task, self._shutdown_event.wait()],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+            done, pending = await asyncio.wait(
+                [serve_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-                if self._shutdown_event.is_set():
-                    server.should_exit = True
-                    await task
-
-            await _run_with_shutdown()
+            if self._shutdown_event.is_set():
+                server.should_exit = True
+                await serve_task
+            else:
+                # Server stopped on its own (unexpected)
+                logger.warning("Uvicorn server stopped unexpectedly")
         else:
             # Fallback HTTP server
             from .server import _FallbackHandler
