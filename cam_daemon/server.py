@@ -445,7 +445,7 @@ class CamEngine:
         ]
         for pat in decision_patterns:
             if pat.lower() in text.lower():
-                for sentence in re.split(r'[.\n。]', text):
+                for sentence in re.split(r"[.\n。]", text):
                     if pat in sentence:
                         facts.append(
                             ExtractedFact(
@@ -471,7 +471,7 @@ class CamEngine:
         ]
         for pat in pref_patterns:
             if pat.lower() in text.lower():
-                for sentence in re.split(r'[.\n。]', text):
+                for sentence in re.split(r"[.\n。]", text):
                     if pat in sentence:
                         facts.append(
                             ExtractedFact(
@@ -502,7 +502,7 @@ class CamEngine:
         ]
         for pat in problem_patterns:
             if pat.lower() in text.lower():
-                for sentence in re.split(r'[.\n。]', text):
+                for sentence in re.split(r"[.\n。]", text):
                     if pat.lower() in sentence.lower():
                         # Only extract if it looks like a real problem report
                         if len(sentence.strip()) > 10:
@@ -533,7 +533,7 @@ class CamEngine:
         ]
         for pat in solution_patterns:
             if pat.lower() in text.lower():
-                for sentence in re.split(r'[.\n。]', text):
+                for sentence in re.split(r"[.\n。]", text):
                     if pat.lower() in sentence.lower():
                         if len(sentence.strip()) > 10:
                             facts.append(
@@ -563,7 +563,7 @@ class CamEngine:
         ]
         for pat in convention_patterns:
             if pat.lower() in text.lower():
-                for sentence in re.split(r'[.\n。]', text):
+                for sentence in re.split(r"[.\n。]", text):
                     if pat.lower() in sentence.lower():
                         if len(sentence.strip()) > 10:
                             facts.append(
