@@ -648,12 +648,22 @@ function handleBeforePromptBuild(
     }
 
     if (!config.injectOnPrompt) return {};
-    try {
-      const stats = store.getStats();
-      const totalPages = stats.totalPages as number;
-      if (totalPages === 0) return {};
 
-      const parts: string[] = [];
+    const contextParts: string[] = [];
+
+    // Inject Layer 3: Schema rules (always, so agent knows how to organize)
+    const schemaPath = join(config.wikiPath, "..", "schema", "CLAUDE.md");
+    try {
+      if (existsSync(schemaPath)) {
+        const schemaContent = readFileSync(schemaPath, "utf-8");
+        contextParts.push("### CAM Knowledge Schema (Layer 3 — Rules)\n" + schemaContent.slice(0, 2000));
+      }
+    } catch {}
+
+    // Inject Layer 2: Wiki knowledge recall
+    const stats = store.getStats();
+    const totalPages = stats.totalPages as number;
+    if (totalPages > 0) {
       const indexPath = join(config.wikiPath, ".cam-index.json");
       try {
         if (existsSync(indexPath)) {
@@ -664,24 +674,23 @@ function handleBeforePromptBuild(
             const pagePath = join(config.wikiPath, fact.category, `${fact.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff\s]/g, " ").replace(/\s+/g, "-").slice(0, 60)}-${Math.abs([...fact.name].reduce((h, c) => ((h << 5) - h) + c.charCodeAt(0) | 0, 0)).toString(16).slice(0, 8)}.md`);
             let preview = fact.content || "";
             try { if (existsSync(pagePath)) preview = readFileSync(pagePath, "utf-8").slice(0, 300); } catch {}
-            parts.push(`**[${fact.category}] ${fact.name}**\n${preview}`);
+            contextParts.push(`**[${fact.category}] ${fact.name}**\n${preview}`);
           }
         }
       } catch {}
-
-      if (parts.length === 0) return {};
-      return {
-        prependSystemContext: [
-          "## CAM Knowledge Recall",
-          `Learned knowledge (${totalPages} pages):`,
-          "",
-          ...parts,
-          "",
-        ].join("\n"),
-      };
-    } catch (e) {
-      return {};
     }
+
+    if (contextParts.length === 0) return {};
+
+    return {
+      prependSystemContext: [
+        "## CAM Knowledge Recall",
+        `Learned knowledge (${totalPages} pages) + CAM Schema rules:`,
+        "",
+        ...contextParts,
+        "",
+      ].join("\n"),
+    };
   };
 }
 
