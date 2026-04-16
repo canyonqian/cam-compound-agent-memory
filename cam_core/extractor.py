@@ -71,6 +71,11 @@ class FactType(Enum):
     PREFERENCE = "preference"  # User's style/behavioral preferences
     TASK = "task"  # Action items / TODOs
     ENTITY = "entity"  # Named entities (people, projects, tools)
+    PROBLEM = "problem"  # Errors, bugs, failures encountered
+    SOLUTION = "solution"  # Fixes, workarounds, successful approaches
+    CONVENTION = "convention"  # Project conventions, coding style, workflows
+    EVENT = "event"  # Factual events, milestones, releases
+    INSIGHT = "insight"  # Lessons learned, key takeaways, observations
 
 
 @dataclass
@@ -148,12 +153,22 @@ EXTRACTION_SYSTEM_PROMPT = """You are a knowledge extraction engine. Your job is
 valuable, persistent information from conversations and structure it as JSON.
 
 Analyze the conversation and extract facts worth remembering long-term. Focus on:
+
+**Decisions & Preferences:**
 - Decisions made (with reasoning)
 - User preferences and patterns
+
+**Technical Knowledge:**
 - Technical concepts explained
-- Action items and tasks
+- Problems encountered (bugs, errors, failures)
+- Solutions that worked (fixes, workarounds, configs)
+- Project conventions (coding style, workflows, standards)
+
+**Facts & Events:**
 - Named entities and their relationships
-- Factual information about the project/user
+- Factual events (releases, milestones, deadlines)
+- Insights and lessons learned
+- Action items and tasks
 
 Rules:
 1. Only extract information that has LASTING value (not transient greetings etc.)
@@ -166,7 +181,7 @@ Output ONLY valid JSON:
 {
   "facts": [
     {
-      "fact_type": "decision|fact|concept|preference|task|entity",
+      "fact_type": "decision|fact|concept|preference|task|entity|problem|solution|convention|event|insight",
       "content": "The fact text (complete sentence)",
       "confidence": 0.85,
       "tags": ["tag1", "tag2"],
@@ -192,12 +207,15 @@ CONVERSATION:
 {assistant_response}
 
 Extract structured facts using this EXACT JSON format (output only the JSON, nothing else):
-{{"facts": [{{"fact_type": "decision|fact|concept|preference|task|entity", "content": "...", "confidence": 0.0-1.0, "tags": ["..."], "entities_mentioned": ["..."]}}]}}
+{{"facts": [{{"fact_type": "decision|fact|concept|preference|task|entity|problem|solution|convention|event|insight", "content": "...", "confidence": 0.0-1.0, "tags": ["..."], "entities_mentioned": ["..."]}}]}}
 
 Guidelines:
-- Only extract info with LASTING value (decisions, preferences, technical concepts, tasks)
+- Extract: decisions, preferences, technical concepts, problems/solutions, conventions, events, insights
 - SKIP: greetings, thanks, "ok", "sure", simple acknowledgments
 - Each fact = one clear, complete statement
+- For problems: capture what went wrong and any error messages
+- For solutions: capture what fixed it
+- For conventions: capture project-specific patterns ("we always...", "the convention is...")
 - confidence: 0.9+ if explicitly stated, 0.7-0.9 if implied, 0.5-0.7 if inferred
 - If nothing is worth remembering: {{"facts": []}}
 """
@@ -578,10 +596,20 @@ class FactExtractor:
             r"(like|love|hate|don't like|prefer not|always|never|usually)\b",
             # Task signals
             r"(need to|have to|must|should|todo|to-do|task|implement|build|create|fix)\b",
-            # Concept/explanation signals (longer responses often contain these)
+            # Concept/explanation signals
             r"(basically|essentially|the idea is|means that|works by|architecture|pattern|design)\b",
             # Entity signals
             r"(project|team|company|tool|library|framework|service|api|database|server)\b",
+            # Problem signals (bugs, errors, failures)
+            r"(error|bug|issue|crash|fail(ed|ure)?|broken|doesn'?t work|problem|wrong|traceback|exception|stack trace)\b",
+            # Solution signals (fixes, workarounds)
+            r"(fixed|solved|workaround|patch|resolved|the fix is|turns out|instead of|switched to)\b",
+            # Convention signals (standards, workflows)
+            r"(convention|standard|practice|style guide|always do|never do|the way we|our process|the rule is)\b",
+            # Event signals (milestones, releases)
+            r"(released|launched|deployed|meeting|deadline|milestone|shipped|announced|version)\b",
+            # Insight signals (lessons learned)
+            r"(learned|discovered|key takeaway|important|note|remember|lesson|pitfall|gotcha|trick)\b",
         ]
 
         signal_count = sum(1 for p in signal_patterns if re.search(p, combined))

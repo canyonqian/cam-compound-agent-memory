@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime
@@ -417,7 +418,7 @@ class CamEngine:
     def _heuristic_extract(self, req: HookRequest) -> list:
         """
         Simple rule-based extraction when LLM is unavailable.
-        Catches common patterns like decisions, preferences, facts.
+        Catches common patterns like decisions, preferences, facts, problems, solutions.
         """
         from cam_core.extractor import FactType, ExtractedFact
 
@@ -425,7 +426,7 @@ class CamEngine:
         text = f"{req.user_message} {req.ai_response}"
         source_text = req.combined_content[:200]
 
-        # Decision patterns
+        # ── Decision patterns ──
         decision_patterns = [
             "we decided",
             "we choose",
@@ -438,24 +439,26 @@ class CamEngine:
             "decided",
             "chose",
             "selected",
+            "决定",
+            "选择",
+            "采用",
         ]
         for pat in decision_patterns:
             if pat.lower() in text.lower():
-                # Find the sentence containing the pattern
-                for sentence in text.split("."):
-                    if pat in sentence.lower():
+                for sentence in re.split(r'[.\n。]', text):
+                    if pat in sentence:
                         facts.append(
                             ExtractedFact(
                                 fact_type=FactType.DECISION,
                                 content=sentence.strip(),
                                 confidence=0.7,
                                 source_text=source_text,
-                                source_type="daemon_heuristic",
+                                agent_id="daemon-heuristic",
                             )
                         )
                 break
 
-        # Preference patterns
+        # ── Preference patterns ──
         pref_patterns = [
             "prefer",
             "like to",
@@ -464,11 +467,12 @@ class CamEngine:
             "偏好",
             "喜欢用",
             "习惯用",
+            "更喜欢",
         ]
         for pat in pref_patterns:
             if pat.lower() in text.lower():
-                for sentence in text.split("."):
-                    if pat in sentence.lower():
+                for sentence in re.split(r'[.\n。]', text):
+                    if pat in sentence:
                         facts.append(
                             ExtractedFact(
                                 fact_type=FactType.PREFERENCE,
@@ -480,7 +484,100 @@ class CamEngine:
                         )
                 break
 
-        # Entity patterns (tech stack mentions)
+        # ── Problem patterns (bugs, errors, failures) ──
+        problem_patterns = [
+            "error",
+            "bug",
+            "crash",
+            "failed",
+            "failure",
+            "broken",
+            "doesn't work",
+            "problem",
+            "issue with",
+            "错误",
+            "崩溃",
+            "失败",
+            "问题",
+        ]
+        for pat in problem_patterns:
+            if pat.lower() in text.lower():
+                for sentence in re.split(r'[.\n。]', text):
+                    if pat.lower() in sentence.lower():
+                        # Only extract if it looks like a real problem report
+                        if len(sentence.strip()) > 10:
+                            facts.append(
+                                ExtractedFact(
+                                    fact_type=FactType.PROBLEM,
+                                    content=sentence.strip(),
+                                    confidence=0.6,
+                                    source_text=source_text,
+                                    agent_id="daemon-heuristic",
+                                )
+                            )
+                break
+
+        # ── Solution patterns (fixes, workarounds) ──
+        solution_patterns = [
+            "fixed",
+            "solved",
+            "workaround",
+            "resolved",
+            "the fix",
+            "turns out",
+            "instead of",
+            "switched to",
+            "修复",
+            "解决",
+            "替代方案",
+        ]
+        for pat in solution_patterns:
+            if pat.lower() in text.lower():
+                for sentence in re.split(r'[.\n。]', text):
+                    if pat.lower() in sentence.lower():
+                        if len(sentence.strip()) > 10:
+                            facts.append(
+                                ExtractedFact(
+                                    fact_type=FactType.SOLUTION,
+                                    content=sentence.strip(),
+                                    confidence=0.65,
+                                    source_text=source_text,
+                                    agent_id="daemon-heuristic",
+                                )
+                            )
+                break
+
+        # ── Convention patterns (standards, workflows) ──
+        convention_patterns = [
+            "we always",
+            "we never",
+            "our convention",
+            "our standard",
+            "the convention",
+            "the way we",
+            "always do",
+            "never do",
+            "我们总是",
+            "我们从不",
+            "我们的惯例",
+        ]
+        for pat in convention_patterns:
+            if pat.lower() in text.lower():
+                for sentence in re.split(r'[.\n。]', text):
+                    if pat.lower() in sentence.lower():
+                        if len(sentence.strip()) > 10:
+                            facts.append(
+                                ExtractedFact(
+                                    fact_type=FactType.CONVENTION,
+                                    content=sentence.strip(),
+                                    confidence=0.65,
+                                    source_text=source_text,
+                                    agent_id="daemon-heuristic",
+                                )
+                            )
+                break
+
+        # ── Entity mentions (tech stack) ──
         entity_patterns = [
             "PostgreSQL",
             "Redis",
@@ -543,9 +640,10 @@ class CamEngine:
                             FactType.FACT: "entity",
                         }.get(fact.fact_type, "entity")
 
-                        self.graph.add_node(
-                            node_type=node_type,
+                        self.graph._get_or_create_node(
+                            id=self.graph._node_id(node_type, fact.content),
                             label=fact.content[:80],
+                            node_type=node_type,
                             content=fact.content,
                             source_file=getattr(fact, "wiki_path", ""),
                             agent_id=agent_id,

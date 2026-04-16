@@ -54,11 +54,44 @@ import { createHash } from "node:crypto";
 // ============================================================
 
 function resolveConfig(cfg: Record<string, unknown>) {
+  // Try multiple sources for wikiPath — OpenClaw may pass config in different shapes
+  let wikiPath = (cfg.wikiPath as string) || "";
+
+  // Handle nested config: { config: { wikiPath: ... } }
+  if (!wikiPath && typeof cfg.config === "object" && cfg.config !== null) {
+    wikiPath = ((cfg.config as Record<string, unknown>).wikiPath as string) || "";
+  }
+
+  // Handle deeply nested: { plugins: { cam: { config: { wikiPath } } } }
+  if (typeof cfg.plugins === "object" && cfg.plugins !== null) {
+    const plugins = cfg.plugins as Record<string, unknown>;
+    // Path 1: plugins.cam.config.wikiPath
+    if (typeof plugins.cam === "object" && plugins.cam !== null) {
+      const cam = plugins.cam as Record<string, unknown>;
+      if (typeof cam.config === "object" && cam.config !== null) {
+        wikiPath = ((cam.config as Record<string, unknown>).wikiPath as string) || "";
+      }
+    }
+    // Path 2: plugins.entries.cam.config.wikiPath (openclaw.json structure)
+    if (!wikiPath && typeof plugins.entries === "object" && plugins.entries !== null) {
+      const entries = plugins.entries as Record<string, unknown>;
+      if (typeof entries.cam === "object" && entries.cam !== null) {
+        const camEntry = entries.cam as Record<string, unknown>;
+        if (typeof camEntry.config === "object" && camEntry.config !== null) {
+          wikiPath = ((camEntry.config as Record<string, unknown>).wikiPath as string) || "";
+        }
+      }
+    }
+  }
+
+  wikiPath =
+    wikiPath ||
+    process.env.CAM_WIKI_PATH ||
+    process.env.CAM_PROJECT_DIR ||
+    "/root/cam/wiki";
+
   return {
-    wikiPath: ((cfg.wikiPath as string) ||
-      process.env.CAM_WIKI_PATH ||
-      process.env.CAM_PROJECT_DIR ||
-      process.cwd()) as string,
+    wikiPath,
     injectOnPrompt: cfg.injectOnPrompt !== false,
     maxRecallPages: Math.min(Math.max((cfg.maxRecallPages as number) || 5, 1), 20),
   };
@@ -139,15 +172,47 @@ class CamMemoryStore {
   // ── Core Operations ──
 
   /**
+   * Compute word-level Jaccard similarity between two strings.
+   * Returns a value between 0 and 1.
+   */
+  private similarity(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/));
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+    let intersection = 0;
+    for (const w of wordsA) { if (wordsB.has(w)) intersection++; }
+    const union = wordsA.size + wordsB.size - intersection;
+    return union > 0 ? intersection / union : 0;
+  }
+
+  /**
+   * Find a similar existing fact for dedup. Returns the matching fact or null.
+   */
+  private findSimilarFact(fact: StoredFact, threshold: number = 0.5): StoredFact | null {
+    // Exact match first
+    const existing = this.index.get(fact.name);
+    if (existing) return existing;
+
+    // Check same category for similarity
+    for (const [, other] of this.index) {
+      if (other.category !== fact.category) continue;
+      const nameSim = this.similarity(fact.name, other.name);
+      const contentSim = this.similarity(fact.content, other.content);
+      if (nameSim >= threshold || contentSim >= threshold) return other;
+    }
+    return null;
+  }
+
+  /**
    * Store a fact into the wiki directory.
    * Returns true if a new page was written, false if deduplicated.
    */
   storeFact(fact: StoredFact): boolean {
-    // Dedup check by name
-    const existing = this.index.get(fact.name);
-    if (existing) {
+    // Dedup check: exact match or similar content
+    const similar = this.findSimilarFact(fact);
+    if (similar) {
       // Update existing: append new info if content differs
-      const existingPath = this.getWikiPagePath(existing.category, existing.name);
+      const existingPath = this.getWikiPagePath(similar.category, similar.name);
       if (existsSync(existingPath)) {
         const existingContent = readFileSync(existingPath, "utf-8");
         if (existingContent.includes(fact.content)) {
@@ -157,6 +222,11 @@ class CamMemoryStore {
         // Append new info to existing page
         const appendSection = `\n\n## ${fact.timestamp}\n\n${fact.content}`;
         appendFileSync(existingPath, appendSection, "utf-8");
+        // Update index with merged fact
+        this.index.set(similar.name, {
+          ...similar,
+          content: similar.content.includes(fact.content) ? similar.content : similar.content + "\n\n" + fact.content,
+        });
         this.dirty = true;
         this.saveIndex();
         return true;
@@ -320,19 +390,30 @@ class CamMemoryStore {
   private renderWikiPage(fact: StoredFact): string {
     const catLabel = fact.category === 'entity' ? 'entity' : fact.category === 'concept' ? 'concept' : 'synthesis';
 
-    // Pick emoji + label
+    // Pick emoji + label based on tags and category
     let emoji: string;
     let typeLabel: string;
-    if (fact.tags.includes('preference') || fact.tags.includes('auto-extracted-preference')) {
+    const tags = fact.tags.join(' ');
+    if (tags.includes('preference')) {
       emoji = '\u{1F3AF}'; typeLabel = 'Preference';
-    } else if (fact.tags.includes('decision') || fact.tags.includes('auto-extracted-decision')) {
+    } else if (tags.includes('decision')) {
       emoji = '\u2705'; typeLabel = 'Decision';
-    } else if (fact.tags.includes('concept') || fact.category === 'concept') {
+    } else if (tags.includes('problem')) {
+      emoji = '\u{1F6A8}'; typeLabel = 'Problem';
+    } else if (tags.includes('solution')) {
+      emoji = '\u{1F527}'; typeLabel = 'Solution';
+    } else if (tags.includes('convention')) {
+      emoji = '\u{1F4CB}'; typeLabel = 'Convention';
+    } else if (tags.includes('insight')) {
+      emoji = '\u{1F4A1}'; typeLabel = 'Insight';
+    } else if (tags.includes('event')) {
+      emoji = '\u{1F4C5}'; typeLabel = 'Event';
+    } else if (fact.category === 'concept') {
       emoji = '\u{1F4A1}'; typeLabel = 'Concept';
     } else if (fact.category === 'entity') {
-      emoji = '\u{1F3AF}'; typeLabel = 'Preference';
+      emoji = '\u{1F3AF}'; typeLabel = 'Entity';
     } else {
-      emoji = '\u2705'; typeLabel = 'Decision';
+      emoji = '\u{1F4DD}'; typeLabel = 'Fact';
     }
 
     const confidence = (fact.sourceSnippet && fact.sourceSnippet.length > 20) ? 90 : 75;
@@ -435,40 +516,57 @@ class CamMemoryStore {
     const facts: Array<Omit<StoredFact, "timestamp">> = [];
     const text = `${userMsg} ${aiResponse}`;
 
-    // Decision patterns — extract clean decision phrase
+    // ── Broad technology list for pattern matching ──
+    const techNames = [
+      "PostgreSQL", "MySQL", "MongoDB", "Redis", "SQLite", "Docker",
+      "Kubernetes", "TDD", "Drizzle", "Prisma", "TypeORM", "FastAPI",
+      "Express", "NextJS", "React", "Vue", "Svelte", "LangChain",
+      "CrewAI", "AutoGen", "Django", "Flask", "NodeJS", "Angular",
+      "TypeScript", "JavaScript", "Python", "Rust", "Go", "Java",
+      "Ruby", "PHP", "Swift", "Kotlin", "GraphQL",
+      "REST", "gRPC", "WebSocket", "Celery", "RabbitMQ", "Kafka",
+      "Nginx", "Apache", "Traefik", "Vercel", "AWS", "GCP", "Azure",
+      "Terraform", "Ansible", "Jenkins", "GitHub Actions", "GitLab CI",
+      "Tailwind", "Material UI", "shadcn", "Radix", "Zustand", "Redux",
+    ];
+    // Escape regex special chars in tech names
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const techAlternation = techNames.map(escapeRegex).join("|");
+
+    // ── Decision patterns (technology choices, architecture decisions) ──
     const decisions = [
-      { re: /(?:decided|chose|selected|will\s+use|going to use|should use)\s+(PostgreSQL|MySQL|MongoDB|Redis|SQLite|Docker|Kubernetes|TDD|Drizzle|Prisma|TypeORM|FastAPI|Express|NextJS|React|Vue|Svelte|LangChain|CrewAI|AutoGen)(?:\s|$)/i, type: "synthesis" as FactCategory, tag: "decision" },
-      { re: /(?:决定|选择|采用|使用|选用)(?:了|要)?\s*(.+?)(?:。|，|因为|用于|作为|$)/, type: "synthesis" as FactCategory, tag: "decision" },
-      { re: /(?:use|using)\s+(PostgreSQL|MySQL|MongoDB|Redis|Docker|Kubernetes|TDD|Drizzle|Prisma|FastAPI|Express|NextJS|React|Vue)/i, type: "synthesis" as FactCategory, tag: "tool-decision" },
+      { re: new RegExp(`(?:decided|chose|selected|will\\s+use|going to use|should use|team decided)\\s+(${techAlternation}|to\\s+use\\s+(${techAlternation}))`, "i"), type: "synthesis" as FactCategory, tag: "decision" },
+      { re: /(?:决定|选择|采用|使用|选用)(?:了|要)?\s*([\u4e00-\u9fffA-Za-z0-9\s\-+/]{2,30})(?:。|，|因为|用于|作为|来|做|$)/, type: "synthesis" as FactCategory, tag: "decision" },
+      { re: new RegExp(`(?:use|using|with)\\s+(${techAlternation})`, "i"), type: "synthesis" as FactCategory, tag: "tool-decision" },
     ];
 
     for (const { re, type, tag } of decisions) {
       const match = text.match(re);
-      if (match && match[1] && match[1].trim().length >= 2) {
-        const extracted = match[1].trim();
-        facts.push({
-          name: this.sanitizeName(extracted),
-          category: type,
-          content: extracted,
-          tags: ["auto-extracted", tag],
-          agentId: "heuristic",
-          sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
-        });
+      if (match) {
+        const extracted = (match[1] || match[0]).trim();
+        if (extracted.length >= 2 && extracted.length <= 80) {
+          facts.push({
+            name: this.sanitizeName(extracted),
+            category: type,
+            content: extracted,
+            tags: ["auto-extracted", tag],
+            agentId: "heuristic",
+            sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
+          });
+        }
       }
     }
 
-    // Preference patterns — extract clean preference phrase
+    // ── Preference patterns ──
     const prefs = [
-      { re: /(?:prefer|prefers|like using|always uses?)\s+(.+?)(?:\.\s|for |when |because|$)/i, type: "entity" as FactCategory, tag: "preference" },
-      { re: /(?:VS Code with Cursor AI|Cursor AI extension|Claude Code best|Copilot Workspace|Docker|GitHub Actions|TDD|Drizzle ORM|PostgreSQL)/i, type: "entity" as FactCategory, tag: "tool" },
-      { re: /(?:using|running|with)\s+(VS Code|Cursor|Claude Code|Copilot|Docker|PostgreSQL|GitHub Actions|TDD|Drizzle|Postgres)(?:\s|$|\b)/i, type: "entity" as FactCategory, tag: "tool" },
+      { re: /(?:prefer|prefers|like using|always uses?|I like)\s+(.+?)(?:\.\s|for |when |because|$)/i, type: "entity" as FactCategory, tag: "preference" },
+      { re: /(?:偏好|喜欢|更倾向于|习惯用|习惯于)\s*([\u4e00-\u9fffA-Za-z0-9\s\-+/]{2,40})(?:。|，|来|用于|因为|所以|$)/, type: "entity" as FactCategory, tag: "preference" },
     ];
 
     for (const { re, type, tag } of prefs) {
       const match = text.match(re);
       if (match && match[1] && match[1].trim().length >= 2) {
         let extracted = match[1].trim();
-        // Clean up common prefixes/suffixes
         extracted = extracted.replace(/^(the |a |an )/i, '').replace(/( for it| for this|, which.*)$/i, '').trim();
         if (extracted.length >= 2 && extracted.length <= 80) {
           facts.push({
@@ -480,16 +578,112 @@ class CamMemoryStore {
             sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
           });
         }
-      } else if (!match[1] && match[0] && match[0].length >= 5) {
-        // Match on full pattern (e.g., tool names)
-        const extracted = match[0].trim();
+      }
+    }
+
+    // ── Problem patterns (bugs, errors, failures) ──
+    const problemPatterns = [
+      /(?:error|bug|crash|fail(?:ed|ure)?|broken|doesn'?t work|problem|issue)\s+(?:with|in|on|when|while)?\s*(.{2,50})/i,
+      /(?:错误|崩溃|失败|问题|bug)\s*(?:在|中|于)?\s*([\u4e00-\u9fffA-Za-z0-9\s\-]{2,40})(?:。|，|$)/,
+    ];
+    for (const re of problemPatterns) {
+      const match = text.match(re);
+      if (match && match[1] && match[1].trim().length >= 2) {
+        const extracted = match[1].trim();
+        if (extracted.length >= 2 && extracted.length <= 80) {
+          facts.push({
+            name: this.sanitizeName(`Problem: ${extracted}`),
+            category: "synthesis" as FactCategory,
+            content: extracted,
+            tags: ["auto-extracted", "problem"],
+            agentId: "heuristic",
+            sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
+          });
+        }
+      }
+    }
+
+    // ── Solution patterns (fixes, workarounds) ──
+    const solutionPatterns = [
+      /(?:fixed|solved|workaround|resolved|the fix (?:is|was)|turns out|instead of)\s+(.{2,60})/i,
+      /(?:修复|解决|替代方案)\s*(?:为|是|了)?\s*([\u4e00-\u9fffA-Za-z0-9\s\-]{2,40})(?:。|，|$)/,
+    ];
+    for (const re of solutionPatterns) {
+      const match = text.match(re);
+      if (match && match[1] && match[1].trim().length >= 2) {
+        const extracted = match[1].trim();
+        if (extracted.length >= 2 && extracted.length <= 80) {
+          facts.push({
+            name: this.sanitizeName(`Solution: ${extracted}`),
+            category: "synthesis" as FactCategory,
+            content: extracted,
+            tags: ["auto-extracted", "solution"],
+            agentId: "heuristic",
+            sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
+          });
+        }
+      }
+    }
+
+    // ── Convention patterns (standards, workflows) ──
+    const conventionPatterns = [
+      /(?:we always|we never|our convention|our standard|the way we)\s+(.{2,60})/i,
+      /(?:我们总是|我们从不|我们的惯例)\s*([\u4e00-\u9fffA-Za-z0-9\s\-]{2,40})(?:。|，|$)/,
+    ];
+    for (const re of conventionPatterns) {
+      const match = text.match(re);
+      if (match && match[1] && match[1].trim().length >= 2) {
+        const extracted = match[1].trim();
+        if (extracted.length >= 2 && extracted.length <= 80) {
+          facts.push({
+            name: this.sanitizeName(`Convention: ${extracted}`),
+            category: "concept" as FactCategory,
+            content: extracted,
+            tags: ["auto-extracted", "convention"],
+            agentId: "heuristic",
+            sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
+          });
+        }
+      }
+    }
+
+    // ── Project/identity patterns ──
+    const projectPatterns = [
+      /(?:项目叫|项目名叫|项目名是|项目名称是)\s*([\u4e00-\u9fffA-Za-z0-9][\u4e00-\u9fffA-Za-z0-9\-_.]{0,29})(?:[\s\u4e00-\u9fff。]|$)/,
+      /(?:project (?:is|was|name is|called))\s+([A-Za-z0-9][A-Za-z0-9\-_.]{0,29})(?:\s+(?:and|for|that|which|is|was|using|with|to|the|a|an)\b|[.,]|$)/i,
+    ];
+    for (const re of projectPatterns) {
+      const match = text.match(re);
+      if (match && match[1] && match[1].trim().length >= 2) {
+        const extracted = match[1].trim();
         facts.push({
           name: this.sanitizeName(extracted),
+          category: "entity" as FactCategory,
+          content: `Project name: ${extracted}`,
+          tags: ["auto-extracted", "project", "identity"],
+          agentId: "heuristic",
+          sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
+        });
+      }
+    }
+
+    // ── Tech stack patterns: "X作为Y", "X for Y" ──
+    const techStackPatterns = [
+      { re: new RegExp(`(${techAlternation})\\s*(?:作为|用作|来做|用于)\\s*([\\u4e00-\\u9fffA-Za-z0-9\\s\\-]{2,30})(?:。|，|$)`, "i"), type: "synthesis" as FactCategory, tag: "tech-stack" },
+      { re: new RegExp(`(${techAlternation})\\s*(?:as|for|to build)\\s+([\\w\\s\\-]{2,30})(?:\\s|$|\\.|,)`, "i"), type: "synthesis" as FactCategory, tag: "tech-stack" },
+    ];
+    for (const { re, type, tag } of techStackPatterns) {
+      const match = text.match(re);
+      if (match && match[1] && match[2] && match[2].trim().length >= 2) {
+        const tech = match[1].trim();
+        const purpose = match[2].trim();
+        facts.push({
+          name: this.sanitizeName(`${tech} for ${purpose}`),
           category: type,
-          content: extracted,
+          content: `${tech} → ${purpose}`,
           tags: ["auto-extracted", tag],
           agentId: "heuristic",
-          sourceSnippet: "> " + userMsg,
+          sourceSnippet: "> " + userMsg + "\n" + match[0].trim(),
         });
       }
     }
@@ -519,6 +713,7 @@ class CamContextEngine implements ContextEngine {
   }> = [];
   private agentId = "unknown";
   private sessionId = "unknown";
+  private pendingUserMsg = ""; // buffer: pairs user+assistant for heuristic extraction
 
   constructor(config: ReturnType<typeof resolveConfig>) {
     this.config = config;
@@ -558,6 +753,7 @@ class CamContextEngine implements ContextEngine {
 
     if (message.role === "user") {
       userText = this.extractText(message.content);
+      this.pendingUserMsg = userText; // buffer for pairing with assistant response
     } else if (message.role === "assistant") {
       aiText = this.extractText(message.content);
     }
@@ -585,8 +781,10 @@ class CamContextEngine implements ContextEngine {
     );
 
     // Heuristic: auto-extract obvious facts
-    if (userText.trim() && aiText.trim()) {
-      const heuristicFacts = this.store.heuristicExtract(userText, aiText);
+    // When assistant responds, pair with buffered user message for full context
+    const effectiveUser = userText.trim() || this.pendingUserMsg;
+    if (effectiveUser && aiText.trim()) {
+      const heuristicFacts = this.store.heuristicExtract(effectiveUser, aiText);
       for (const fact of heuristicFacts) {
         this.store.storeFact({
           ...fact,
@@ -596,6 +794,23 @@ class CamContextEngine implements ContextEngine {
       if (heuristicFacts.length > 0) {
         console.log(
           `[cam-ingest] Auto-extracted ${heuristicFacts.length} facts (heuristic)`,
+        );
+      }
+      this.pendingUserMsg = ""; // clear buffer after pairing
+    }
+
+    // Also extract from user-only messages (decisions/preferences stated by user)
+    if (userText.trim() && !aiText.trim()) {
+      const userFacts = this.store.heuristicExtract(userText, "");
+      for (const fact of userFacts) {
+        this.store.storeFact({
+          ...fact,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      if (userFacts.length > 0) {
+        console.log(
+          `[cam-ingest] Auto-extracted ${userFacts.length} facts from user message`,
         );
       }
     }
@@ -988,27 +1203,152 @@ Guidelines:
 - Store decisions, user preferences, project conventions, technical choices
 - Do NOT store trivial or obvious information`;
 
+/**
+ * Extract text from a message content field (same logic as in CamContextEngine).
+ */
+function extractTextFromContent(
+  content?: string | Array<{ type: string; text?: string }>,
+): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text || "")
+      .join("\n");
+  }
+  return String(content);
+}
+
+/**
+ * before_prompt_build hook — does TWO things:
+ * 1. EXTRACT: Reads the conversation from event.messages, runs heuristic
+ *    extraction, and stores facts directly to the wiki.
+ * 2. RECALL: Reads recent wiki entries and injects them as system context.
+ *
+ * This replaces the reliance on ContextEngine.ingest() which isn't called
+ * by the OpenClaw embedded runner.
+ */
 function handleBeforePromptBuild(
   config: ReturnType<typeof resolveConfig>,
   engine: CamContextEngine,
-): { prependSystemContext?: string } {
-  if (!config.injectOnPrompt) return {};
+): (event: any, ctx: any) => Promise<{ prependSystemContext?: string; prependContext?: string }> {
+  // Track which turns we've already processed to avoid duplicates
+  const processedTurns = new Set<string>();
 
-  const parts: string[] = [CAM_RECALL_INSTRUCTION];
+  return async (event, ctx) => {
+    if (!config.injectOnPrompt) return {};
 
-  // Check for recent attachments
-  const attachments = engine.getRecentAttachments();
-  if (attachments.length > 0) {
-    const fileList = attachments
-      .map((a) => `- 📄 ${a.type}: ${a.name}`)
-      .join("\n");
-    parts.push("");
-    parts.push(
-      `⚠️ FILE/IMAGE DETECTED — You received the following attachments:\n${fileList}\n\nYou MUST analyze the file/image content and use cam_extract_file to store key knowledge from it.`,
-    );
-  }
+    try {
+      // ── Phase 1: Extract facts from conversation ──
+      const messages = event.messages || [];
+      const prompt = event.prompt || "";
 
-  return { prependSystemContext: parts.join("\n") };
+      // Build turn pairs from conversation history
+      const turns: Array<{ user: string; assistant: string }> = [];
+      let lastUser = "";
+      for (const msg of messages) {
+        const role = msg.role || "";
+        const text = extractTextFromContent(msg.content);
+        if (role === "user" && text.trim()) {
+          lastUser = text;
+        } else if (role === "assistant" && text.trim() && lastUser) {
+          turns.push({ user: lastUser, assistant: text });
+          lastUser = "";
+        }
+      }
+      // If current prompt is a new user message not yet in turns, pair it too
+      if (prompt && prompt !== lastUser && lastUser) {
+        turns.push({ user: lastUser, assistant: "" });
+      }
+
+      // Process new turns through heuristic extraction
+      let extractedCount = 0;
+      const store = engine.getStore();
+      for (const turn of turns) {
+        const turnKey = `${turn.user.slice(0, 50)}|${turn.assistant.slice(0, 50)}`;
+        if (processedTurns.has(turnKey)) continue;
+        processedTurns.add(turnKey);
+
+        const facts = store.heuristicExtract(turn.user, turn.assistant);
+        for (const fact of facts) {
+          const didStore = store.storeFact({
+            ...fact,
+            timestamp: new Date().toISOString(),
+          });
+          if (didStore) extractedCount++;
+        }
+      }
+      if (extractedCount > 0) {
+        console.log(`[cam-hook] Auto-extracted ${extractedCount} facts from ${turns.length} turns`);
+      }
+
+      // ── Phase 2: Recall relevant memories ──
+      const parts: string[] = [];
+
+      const stats = store.getStats();
+      const totalPages = stats.totalPages as number;
+      if (totalPages > 0) {
+        const indexPath = join(config.wikiPath, ".cam-index.json");
+        let contextParts: string[] = [];
+        try {
+          if (existsSync(indexPath)) {
+            const data = JSON.parse(readFileSync(indexPath, "utf-8"));
+            const facts = data.facts || [];
+            const recent = facts.slice(-config.maxRecallPages);
+            for (const fact of recent) {
+              const safeName = fact.name
+                .replace(/[^a-zA-Z0-9\u4e00-\u9fff\s]/g, ' ')
+                .replace(/\s+/g, '-')
+                .replace(/-+/g, '-')
+                .replace(/^-|-$/g, '');
+              const hash = Math.abs([...fact.name].reduce((h, c) => ((h << 5) - h) + c.charCodeAt(0) | 0, 0)).toString(16).slice(0, 8);
+              const pagePath = join(config.wikiPath, fact.category, `${safeName}-${hash}.md`);
+              let preview = fact.content || "";
+              try {
+                if (existsSync(pagePath)) {
+                  preview = readFileSync(pagePath, "utf-8").slice(0, 300);
+                }
+              } catch {}
+              contextParts.push(
+                `**[${fact.category}] ${fact.name}**\n${preview}`,
+              );
+            }
+          }
+        } catch {}
+
+        if (contextParts.length > 0) {
+          parts.push("## 🧠 CAM Memory Recall");
+          parts.push("");
+          parts.push(`The following knowledge was recalled from your memory wiki (${totalPages} pages total):`);
+          parts.push("");
+          parts.push(...contextParts);
+          parts.push("");
+        }
+      }
+
+      // Always inject the CAM instructions
+      parts.push(CAM_RECALL_INSTRUCTION);
+
+      // Check for recent attachments
+      const attachments = engine.getRecentAttachments();
+      if (attachments.length > 0) {
+        const fileList = attachments
+          .map((a) => `- 📄 ${a.type}: ${a.name}`)
+          .join("\n");
+        parts.push("");
+        parts.push(
+          `⚠️ FILE/IMAGE DETECTED — You received the following attachments:\n${fileList}\n\nYou MUST analyze the file/image content and use cam_extract_file to store key knowledge from it.`,
+        );
+      }
+
+      return { prependSystemContext: parts.join("\n") };
+    } catch (e) {
+      console.error(`[cam-hook] Error in before_prompt_build: ${e}`);
+      // Still return instructions so the hook doesn't break the prompt
+      return { prependSystemContext: CAM_RECALL_INSTRUCTION };
+    }
+  };
 }
 
 // ============================================================
@@ -1044,9 +1384,7 @@ const camPlugin = {
     api.registerTool(() => createCamExtractFileTool(store));
 
     // ── L3: Hooks (补充增强) ──
-    api.on("before_prompt_build", () =>
-      handleBeforePromptBuild(config, engine),
-    );
+    api.on("before_prompt_build", handleBeforePromptBuild(config, engine));
 
     console.log(`[cam] Plugin v6.0 loaded (Self-Contained)`);
     console.log(`[cam] wikiPath=${config.wikiPath}`);

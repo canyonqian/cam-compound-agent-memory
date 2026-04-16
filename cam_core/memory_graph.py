@@ -473,7 +473,7 @@ class MemoryGraph:
                 )
                 self._nodes[node.id] = node
                 self._label_index[node.label.lower()] = node.id
-                self._type_index[node.type].append(node.id)
+                self._type_index[node.node_type].append(node.id)
 
             for ed in data.get("edges", []):
                 edge = GraphEdge(**ed)

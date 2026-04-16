@@ -282,7 +282,10 @@ class SimilarityEngine:
         elif self.method == "tfidf":
             return self._tfidf_similarity(text_a, text_b)
         elif self.method == "embedding":
-            return self._embedding_similarity(text_a, text_b)
+            # _embedding_similarity is async, but compute() is sync — run it via
+            # asyncio event loop or just fall back to keyword for sync context.
+            logger.debug("Embedding similarity not available in sync context, using keyword")
+            return self._keyword_similarity(text_a, text_b)
         else:
             return self._keyword_similarity(text_a, text_b)
 

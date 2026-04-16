@@ -93,11 +93,11 @@ class IngestItem:
         if not safe_title or safe_title.strip("-") == "":
             safe_title = f"untitled_{self.created_at.strftime('%Y%m%d_%H%M%S')}"
 
-        timestamp = self.created_atstrftime("%Y%m%d_%H%M%S")
+        timestamp = self.created_at.strftime("%Y%m%d_%H%M%S")
         ext = ".md"
         if self.content_type == ContentType.PDF:
             ext = ".txt"
-        elif self.source_type == SourceType.CODE:
+        elif self.content_type == ContentType.CODE:
             ext = self.metadata.get("extension", ".md")
 
         return base_dir / f"{timestamp}_{safe_title}{ext}"

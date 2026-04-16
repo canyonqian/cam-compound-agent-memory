@@ -44,7 +44,7 @@ User message ──→ Agent ──→ Reply
 ## Project Structure
 
 ```
-compound-wiki/
+cam/
 ├── cam_daemon/          ⭐ Core — FastAPI daemon (extract / dedupe / store / recall)
 │   ├── server.py        POST /hook, GET /query, /stats, /health, /ingest
 │   ├── client.py        Lightweight Python SDK + AutoRemember decorator

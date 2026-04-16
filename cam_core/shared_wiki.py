@@ -192,6 +192,11 @@ class WikiTransaction:
             FactType.PREFERENCE: "entity",
             FactType.TASK: "synthesis",
             FactType.ENTITY: "entity",
+            FactType.PROBLEM: "synthesis",
+            FactType.SOLUTION: "synthesis",
+            FactType.CONVENTION: "concept",
+            FactType.EVENT: "synthesis",
+            FactType.INSIGHT: "synthesis",
         }.get(fact.fact_type, "entity")
 
         # Generate filename from content hash + first meaningful words

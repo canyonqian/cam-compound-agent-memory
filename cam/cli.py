@@ -217,6 +217,88 @@ def cmd_init(path="."):
         perspective_example.write_text(perspective_content, encoding="utf-8")
         print(f"  {C.GREEN}✓{C.END} schema/PERSPECTIVE.example.md (模板)")
 
+    # 写入 CLAUDE.md 规则文件（如果不存在）
+    claude_path = target / CLAUDE_FILE
+    if not claude_path.exists():
+        claude_content = """# CAM 知识组织规则 (CLAUDE.md)
+
+> 这个文件告诉 AI 如何组织和维护你的知识库。
+
+## 📚 知识库结构
+
+```
+wiki/
+├── entity/      # 实体页：人、项目、工具、具体事物
+├── concept/     # 概念页：技术、方法、抽象概念
+└── synthesis/   # 综合页：决策、偏好、经验教训
+```
+
+## 🏷️ 知识分类规则
+
+### entity/ — 实体页
+- **谁**: 人名、团队名、角色
+- **什么**: 项目名、工具名、服务名
+- **特征**: 具体的、可命名的对象
+- **示例**: `PostgreSQL`, `CAM`, `张三`
+
+### concept/ — 概念页
+- **技术**: 框架、库、语言、架构模式
+- **方法**: TDD、CI/CD、Git 工作流
+- **约定**: 项目规范、编码风格、工作惯例
+- **示例**: `异步编程模式`, `分层架构`
+
+### synthesis/ — 综合页
+- **决策**: 技术选型、架构决定（附理由）
+- **偏好**: 用户习惯、个人偏好
+- **问题/解决**: 遇到的 bug 和修复方案
+- **经验**: 踩过的坑、学到的教训
+- **示例**: `为什么选择 FastAPI`, `PostgreSQL 连接池问题`
+
+## ✍️ 页面格式
+
+每个页面应该是这样的 Markdown：
+
+```markdown
+# 标题
+
+> 一句话总结
+
+## 详情
+
+具体内容...
+
+## 相关
+
+- [[相关页面1]]
+- [[相关页面2]]
+
+*由 CAM 自动生成*
+```
+
+## 📥 工作流程
+
+1. **Ingest**: 从 `raw/` 读取原始资料 → 编译到 `wiki/`
+2. **Query**: 从 `wiki/` 检索知识 → 注入对话上下文
+3. **Lint**: 定期检查 wiki 一致性 → 修复断链和重复
+
+## ⚠️ 质量规则
+
+- 每条知识应该原子化（一个事实一页）
+- 避免重复：检查是否已有类似页面
+- 保持简洁：不要复制大段原文
+- 标记来源：知识是从哪里来的
+- 跨项目区分：如果涉及多个项目，用标签标注
+
+## 🔄 维护
+
+- 发现过时内容时更新
+- 合并重复页面
+- 修复损坏的双链引用
+- 定期整理索引
+"""
+        claude_path.write_text(claude_content, encoding="utf-8")
+        print(f"  {C.GREEN}✓{C.END} schema/CLAUDE.md (规则文件)")
+
     # 写入 wiki/index.md 如果不存在
     index_path = target / INDEX_FILE
     if not index_path.exists():
@@ -263,8 +345,7 @@ _(暂无)_
     print()
     print(f"下一步操作 ({C.DIM}3 步开始使用{C.END}):")
     print(f"  1️⃣  {C.CYAN}cd {target.name}{C.END}")
-    print(f"  2️⃣  编辑 {C.CYAN}schema/CLAUDE.md{C.END} 定义知识库规则")
-    print("  3️⃣  复制视角偏好:")
+    print(f"  2️⃣  编辑 {C.CYAN}schema/PERSPECTIVE.md{C.END} 设置你的身份偏好:")
     print(f"      {C.DIM}cp schema/PERSPECTIVE.example.md schema/PERSPECTIVE.md{C.END}")
     print()
     print("然后就可以用了:")

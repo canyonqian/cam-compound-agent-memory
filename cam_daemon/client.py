@@ -160,7 +160,7 @@ class CamClient:
             import aiohttp
 
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
-                async with session.get(f"{self.base_path}{path}", params=params or {}) as resp:
+                async with session.get(f"{self.base_url}{path}", params=params or {}) as resp:
                     return await resp.json()
 
 

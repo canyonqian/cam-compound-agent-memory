@@ -44,7 +44,7 @@ CAM 给**任何 AI Agent** 提供持久化长期记忆。
 ## 项目结构
 
 ```
-compound-wiki/
+cam/
 ├── cam_daemon/          ⭐ 核心 — FastAPI 守护进程（提取 / 去重 / 存储 / 召回）
 │   ├── server.py        POST /hook, GET /query, /stats, /health, /ingest
 │   ├── client.py        轻量 Python SDK + AutoRemember 装饰器
