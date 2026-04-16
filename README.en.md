@@ -1,7 +1,7 @@
 # 🧠 CAM — Compound Agent Memory
 
 <p align="center">
-  AI-driven memory engine for any Agent · Auto-extract · Store in Wiki · Recall on demand
+  AI Agent Autonomous Learning Knowledge Engine · Zero Extra LLM Calls · Markdown Wiki Storage
 </p>
 
 <p align="center">
@@ -15,51 +15,68 @@
 
 ## What?
 
-CAM gives **any AI Agent** persistent long-term memory.
+CAM gives **any AI Agent** the ability to autonomously learn knowledge.
 
-1. Agent talks → **CAM auto-extracts** knowledge from conversations
-2. Knowledge goes into a **Markdown Wiki** (no database needed)
-3. Next conversation → **CAM auto-recalls** relevant context into the prompt
+1. User sends message → **CAM intercepts**
+2. After Agent replies → **CAM auto-extracts knowledge** into Wiki (zero extra LLM calls)
+3. Next conversation → **CAM auto-recalls** relevant context into prompt
 
-> Inspired by [Karpathy's LLM-Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). The more you use it, the smarter it gets.
+> Inspired by [Karpathy's LLM-Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): LLMs don't get bored of bookkeeping, which is exactly why humans stop maintaining wikis.
 
 ## How It Works
 
 ```
-User message ──→ Agent ──→ Reply
-     │                    │
-     ├── ContextEngine.ingest() ──→ Daemon HTTP /hook ──→ Wiki/ (auto store)
-     │
-     ←── ContextEngine.assemble() ←─ Daemon GET /query ←── Wiki/ (auto recall)
+User message ──→ Agent (reply)
+   │             │
+   │             ├── llm_output hook → Heuristic extraction → Wiki/ (auto store)
+   │
+   └── message_received hook → Cache user message
 ```
 
-**Three layers** (inspired by LCM / OpenClaw):
+**Zero extra LLM calls**: CAM doesn't call a separate LLM to extract knowledge — it grabs from the Agent's existing reply. The Agent was going to answer anyway; CAM just learns along the way.
 
-| Layer | Mechanism | Trigger |
-|-------|-----------|---------|
-| **Core** | `registerContextEngine("cam")` | Framework auto-calls `ingest()` + `assemble()` per message |
-| **Tool** | `cam_query` / `cam_stats` / `cam_ingest` / `cam_extract_file` | Agent calls on demand |
-| **Hook** | `before_prompt_build` / `llm_output` | Event-driven (file detection, prompt injection) |
+## Three-Layer Architecture
+
+```
+                    ┌──────────────────────────────────┐
+                    │  Layer 3: Schema (Rules)          │
+                    │  schema/CLAUDE.md                 │
+                    │  Classification · Page format · What NOT to store │
+                    └────────────────┬─────────────────┘
+                                     ↑
+                    ┌──────────────────────────────────┐
+                    │  Layer 2: Wiki (Compiled knowledge)│
+                    │  concept/  — Principles, mechanisms│
+                    │  synthesis/— Comparisons, decisions│
+                    │  entity/   — Specific projects, tools, people │
+                    └────────────────┬─────────────────┘
+                                     ↑
+                    ┌──────────────────────────────────┐
+                    │  Layer 1: Raw (Immutable sources) │
+                    │  raw/ — Full conversation logs    │
+                    └──────────────────────────────────┘
+```
 
 ## Project Structure
 
 ```
 cam/
-├── cam_daemon/          ⭐ Core — FastAPI daemon (extract / dedupe / store / recall)
-│   ├── server.py        POST /hook, GET /query, /stats, /health, /ingest
-│   ├── client.py        Lightweight Python SDK + AutoRemember decorator
-│   ├── config.py        LLM provider, port, throttle settings
-│   └── daemon.py        PID file, graceful shutdown, lifecycle
 ├── plugins/
-│   └── openclaw/index.ts  OpenClaw plugin (v4: ContextEngine + Tool + Hook)
-├── memory_core/
-│   ├── extractor.py      LLM-powered fact extraction
-│   ├── deduplicator.py   Similarity-based dedup
-│   └── shared_wiki.py    Atomic Markdown write with merge
-├── cam/                  CLI (`cam init`, `cam daemon start/stop/status`)
-└── wiki/                 Output: structured Markdown pages
-    ├── entity/           Facts about people, projects, decisions
-    └── synthesis/        Synthesized conclusions & comparisons
+│   └── openclaw/index.ts  ⭐ Core — OpenClaw plugin (v11)
+│                            • message_received → Cache user messages
+│                            • llm_output → Heuristic knowledge extraction
+│                            • before_prompt_build → Schema + Wiki recall
+├── cam_daemon/            FastAPI daemon (optional, Python SDK)
+├── cam_core/              LLM extraction / dedup / Wiki write (Python SDK)
+├── cam/                   CLI (`cam init`, `cam daemon start/stop`)
+├── schema/                ⭐ Layer 3: Knowledge organization rules
+│   ├── CLAUDE.md          Classification + page format + what NOT to store
+│   └── templates/         Wiki page templates
+└── wiki/                  Output: Structured Markdown pages
+    ├── raw/               Raw conversation logs (immutable)
+    ├── entity/            Specific entities (projects, tools, people)
+    ├── concept/           Technical concepts (principles, mechanisms, methods)
+    └── synthesis/         Synthesized knowledge (comparisons, decisions, solutions)
 ```
 
 ## Quick Start
@@ -68,46 +85,36 @@ cam/
 
 ```bash
 pip install cam
-cam init --dir ~/my-wiki          # creates wiki/ directory
+cam init --dir ~/my-wiki          # creates wiki/ + schema/ directories
 ```
 
-### 2. Start Daemon
+### 2. Connect via OpenClaw (recommended)
 
-```bash
-cam daemon start                    # starts FastAPI on :9877
-cam daemon status                   # check if running
-curl http://localhost:9877/health   # {"status":"healthy"}
-```
-
-### 3. Use with OpenClaw (recommended)
-
-Install the plugin — it registers as a **ContextEngine**, so every message is automatically captured and recalled:
+Install the plugin — CAM auto-learns through hooks:
 
 ```bash
 openclaw plugin install /path/to/plugins/openclaw
-openclaw gateway restart            # done! zero config needed
+openclaw gateway restart            # done! zero configuration
 ```
 
-### 4. Or use from any code (3 lines)
+### 3. Or from any code (3 lines)
 
 ```python
 from cam_daemon.client import CamClient, AutoRemember
 client = CamClient()                # connects to localhost:9877
 auto = AutoRemember(agent_id="my-agent")
 
-# After every message exchange:
-await auto(user_message, reply)     # extracts facts → stores in wiki
+# After each conversation:
+await auto(user_message, reply)     # extracts knowledge → writes to wiki
 results = await client.query("project architecture")  # recalls relevant context
 ```
 
-## Tools Available to Agents
+## Agent Available Tools
 
 | Tool | What It Does |
 |------|-------------|
-| `cam_query` | Search the knowledge base |
-| `cam_stats` | View stats (facts, pages, health) |
-| `cam_ingest` | Manually store content |
-| `cam_extract_file` | **File/image/doc → LLM extract → Wiki** |
+| `cam_query` | Search CAM Wiki knowledge base |
+| `cam_stats` | View stats (fact count, pages, health) |
 
 ## Config
 
@@ -115,28 +122,24 @@ Set environment variables or edit `wiki/.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CAM_LLM_PROVIDER` | `openai` | LLM provider for extraction |
-| `CAM_LLM_MODEL` | `gpt-4o-mini` | Model used for fact extraction |
-| `CAM_DAEMON_PORT` | `9877` | Daemon listen port |
-| `OPENAI_API_KEY` | *(none)* | Required for LLM extraction (or set your own) |
 | `CAM_PROJECT_DIR` | `./wiki` | Wiki output directory |
-
-**No API key?** CAM falls back to heuristic extraction (pattern matching, no LLM needed).
+| `CAM_DAEMON_PORT` | `9877` | Daemon listen port |
 
 ## FAQ
 
-**Q: Database?**
-No. Pure Markdown files — human-readable, git-friendly, works with Obsidian.
-
-**Q: Offline?**
-Yes. Use local models via Ollama/Qwen + `CAM_LLM_BASE_URL=http://localhost:11434`.
+**Q: Need a database?**
+No. Pure Markdown files — human-readable, git-friendly, works great with Obsidian.
 
 **Q: RAG vs CAM?**
-RAG = slice raw docs → retrieve → re-synthesize each time (ephemeral).
-CAM = extract once → structure into Wiki → keep improving forever (compounding).
+RAG = slice raw docs → retrieve → re-synthesize each time (throw away after use).
+CAM = extract once → structure into Wiki → iterate and persist forever (compounding growth).
+They complement each other: CAM manages core knowledge, RAG handles massive temporary reference docs.
 
-**Q: Hallucinations?**
-Four guards: source traceability, periodic LINT audit, incremental imports, uncertainty markers.
+**Q: Need extra LLM calls?**
+No. In OpenClaw mode, CAM extracts knowledge from the Agent's existing replies — zero extra calls.
+
+**Q: What about hallucinations?**
+Four defenses: ① Source traceability (raw/ directory) ② Periodic LINT audits ③ Incremental imports for verification ④ Uncertain content clearly marked.
 
 ---
 
