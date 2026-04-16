@@ -35,7 +35,6 @@ venv/
 wiki/**/*-*.md
 wiki/.cam-index.json
 .cam-index.json
-schema/
 
 # === Outputs（可选保留）===
 # outputs/ 下的内容通常不需要提交

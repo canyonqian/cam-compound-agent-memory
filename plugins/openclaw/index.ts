@@ -39,6 +39,24 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
+// Module-level state — shared across all plugin instances in the same process
+// Since Node.js is single-threaded, just track the most recent user message
+let lastUserMessage = "";
+
+function setPendingUserMsg(content: string) {
+  if (content.trim().length > 5) {
+    lastUserMessage = content;
+  }
+}
+
+function getPendingUserMsg(): string {
+  return lastUserMessage;
+}
+
+function clearPendingUserMsg() {
+  lastUserMessage = "";
+}
+
 // ============================================================
 // Config
 // ============================================================
@@ -279,6 +297,100 @@ class CamMemoryStore {
 // ============================================================
 
 /**
+ * Strip agent's internal thinking/meta-commentary from the response.
+ * Removes: "Let me search...", "我来看一下", "好的我来帮你", etc.
+ * Keeps: actual knowledge, explanations, comparisons, technical content.
+ */
+function stripAgentThinking(text: string): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let pastThinking = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip thinking lines at the beginning
+    if (!pastThinking) {
+      const thinkingPatterns = [
+        /^(好的|好的，|好的!|好的！|明白|收到|没问题|让我|我来|我来查|我来搜索|我来看看|我来找)/i,
+        /^(let me|i'll|i will|sure|ok|of course)/i,
+        /^(fetching|searching|looking up|checking|analyzing)/i,
+        /^(搜索|查找|看看|分析一下|帮你|为你)/i,
+        /^已存入.*memory/i,
+        /^这个模式.*很有参考价值/i,
+      ];
+      if (thinkingPatterns.some((p) => p.test(trimmed))) continue;
+      if (trimmed === "" && !pastThinking) continue;
+      pastThinking = true;
+    }
+
+    // Skip trailing meta-commentary
+    const trailingPatterns = [
+      /^这个模式对于.*很有参考价值/i,
+      /^如果你需要/i,
+      /^希望这个.*对你有/i,
+      /^以上/i,
+      /^总结[：:]/i,
+      /^已存入.*memory/i,
+    ];
+    if (trailingPatterns.some((p) => p.test(trimmed))) continue;
+
+    kept.push(line);
+  }
+
+  return kept.join("\n").trim();
+}
+
+/**
+ * Clean markdown for wiki storage — preserve structure, remove noise.
+ */
+function cleanMarkdown(text: string): string {
+  // Collapse code blocks into readable form (truncate very long ones)
+  let out = text.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
+    const lines = code.trim().split("\n").slice(0, 15); // max 15 lines
+    return code.length > 300 ? lines.join("\n") + "\n[...]" : code;
+  });
+
+  // Simplify tables: keep the data, remove the border syntax
+  out = out.replace(/\n(\|.+\|\n\|[-| :]+\|\n((?:\|.+\|\n?)+))/g, (m, tableBlock) => {
+    // Remove the header separator line (|---|---|)
+    return tableBlock
+      .split("\n")
+      .filter((l) => !/^[\s|:-]+$/.test(l.trim()) && l.trim().length > 3)
+      .join("\n");
+  });
+
+  // Remove horizontal rules
+  out = out.replace(/^-{3,}$/gm, "");
+
+  // Remove image links (keep alt text if present)
+  out = out.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+
+  // Simplify links: keep text, remove URLs
+  out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+  // Collapse excessive blank lines
+  out = out.replace(/\n{3,}/g, "\n\n");
+
+  return out.trim();
+}
+
+/**
+ * Extract a meaningful topic name from agent response headers.
+ */
+function extractTopic(response: string): string {
+  // Try to find the first meaningful header
+  const headerMatch = response.match(/^#{1,3}\s+(.+)$/m);
+  if (headerMatch) {
+    const topic = headerMatch[1].trim();
+    if (topic.length > 3 && topic.length < 80) return topic;
+  }
+  // Try to find a key term from the first non-empty line
+  const firstLine = response.split("\n").find((l) => l.trim().length > 5);
+  if (firstLine) return firstLine.trim().slice(0, 60);
+  return "unknown";
+}
+
+/**
  * Extract knowledge from agent's LLM response using heuristics.
  * No extra LLM call needed — uses what the agent already generated.
  */
@@ -291,66 +403,53 @@ function heuristicExtract(
   // Skip greetings, short replies
   const greetingPatterns = [/^(好的|好的，|好的!|好的！|明白|收到|没问题|可以|当然|ok|yes|sure|hi|hello|hey)/i];
   if (greetingPatterns.some((p) => p.test(agentResponse.trim()))) return facts;
-  if (agentResponse.trim().length < 80) return facts;
+  if (agentResponse.trim().length < 100) return facts;
 
-  // Strip markdown for cleaner knowledge storage (keep key formatting)
-  const cleanText = agentResponse
-    .replace(/```[\s\S]*?```/g, (m) => m.slice(0, 500)) // truncate code blocks
-    .replace(/#{2,}\s/g, "") // strip sub-headers
-    .replace(/#{1}\s/g, "") // strip main headers
-    .replace(/\*\*(.+?)\*\*/g, "$1") // strip bold markers but keep text
-    .replace(/\*(.+?)\*/g, "$1") // strip italic markers
-    .replace(/\|[\s\-:|]+\|/g, "") // strip table borders
-    .replace(/---+/g, "") // strip horizontal rules
-    .replace(/\n{3,}/g, "\n\n") // normalize whitespace
-    .trim();
+  // Step 1: Strip agent thinking/meta-commentary
+  const knowledgeText = stripAgentThinking(agentResponse);
+
+  // Step 2: Clean markdown for wiki storage
+  const cleanText = cleanMarkdown(knowledgeText);
+
+  if (cleanText.length < 50) return facts;
+
+  const topic = extractTopic(agentResponse);
 
   // 1. Technical explanation → concept
   const explanationSignals = [
-    /原理|机制|工作方式|运行方式|如何实现|底层|工作流|架构/,
-    /because|principle|mechanism|how it works|architecture|workflow/,
+    /原理|机制|工作方式|运行方式|如何实现|底层|工作流|架构|核心|关键|技术|算法/,
+    /because|principle|mechanism|how it works|architecture|workflow|core|key technique/,
   ];
   const hasExplanation = explanationSignals.some((p) => p.test(agentResponse));
 
-  if (hasExplanation && cleanText.length > 50) {
-    // Use user question as title, full cleaned response as content
-    const title = userMessage
-      ? userMessage.replace(/[？?]/g, "").slice(0, 80)
-      : agentResponse.split("\n")[0].slice(0, 80);
-    const content = `[Q: ${userMessage || "(technical question)"}]\n\n${cleanText.slice(0, 1500)}`;
+  if (hasExplanation && cleanText.length > 80) {
+    const content = `Topic: ${topic}\n\nSource Question: ${userMessage || "(technical discussion)"}\n\n${cleanText.slice(0, 2000)}`;
     facts.push({ type: "concept", content });
   }
 
   // 2. Comparison/contrast → synthesis
   const comparisonSignals = [
-    /vs\.?|对比|区别|相比|不同于|与.*不同|差异|优劣|权衡|trade.?off/i,
+    /vs\.?|对比|区别|相比|不同于|与.*不同|差异|优劣|权衡|trade.?off|比较/i,
   ];
-  if (comparisonSignals.some((p) => p.test(agentResponse))) {
-    // Extract the comparison as a synthesis page
-    const title = agentResponse.match(/^# (.+)$/m)?.[1]?.slice(0, 80) || "Comparison";
-    const comparisonText = cleanText.slice(0, 1000);
-    facts.push({
-      type: "synthesis",
-      content: `[${title}]\n\n${comparisonText}`,
-    });
+  if (comparisonSignals.some((p) => p.test(agentResponse)) && cleanText.length > 100) {
+    const comparisonContent = `Topic: ${topic}\n\nSource Question: ${userMessage || "(comparison)"}\n\n${cleanText.slice(0, 2000)}`;
+    facts.push({ type: "synthesis", content: comparisonContent });
   }
 
   // 3. Solution/steps → synthesis
   const solutionSignals = [
-    /解决方案|解决方法|修复方法|步骤|第一步|首先.*然后|最后.*结论/,
-    /to fix|solution|step 1|first.*then|finally|workaround/,
+    /解决方案|解决方法|修复方法|步骤|第一步|首先.*然后|最佳实践|配置建议/,
+    /to fix|solution|step 1|first.*then|finally|workaround|best practice|configuration/i,
   ];
-  if (solutionSignals.some((p) => p.test(agentResponse))) {
-    facts.push({
-      type: "synthesis",
-      content: `[Solution]\n${cleanText.slice(0, 1000)}`,
-    });
+  if (solutionSignals.some((p) => p.test(agentResponse)) && cleanText.length > 100) {
+    const solutionContent = `Topic: ${topic}\n\nSource Question: ${userMessage || "(solution)"}\n\n${cleanText.slice(0, 2000)}`;
+    facts.push({ type: "synthesis", content: solutionContent });
   }
 
-  // 4. Code-heavy response with tech names → entity mention
+  // 4. Tech entities mentioned in technical context
   const codeBlocks = agentResponse.match(/```(\w+)?\n[\s\S]*?```/g);
   if (codeBlocks && codeBlocks.length > 0) {
-    const techNames = agentResponse.match(/\b(SQLite|PostgreSQL|Redis|MongoDB|MySQL|GraphQL|REST|gRPC|WebSocket|Nginx|Kafka|RabbitMQ|React|Vue|Next\.?js|Django|Flask|FastAPI|Express|TensorFlow|PyTorch|Ollama|Kubernetes|Terraform|Docker|Git|WAL|JDBC|ORM|ACID)\b/g);
+    const techNames = agentResponse.match(/\b(SQLite|PostgreSQL|Redis|MongoDB|MySQL|GraphQL|REST|gRPC|WebSocket|Nginx|Kafka|RabbitMQ|React|Vue|Next\.?js|Django|Flask|FastAPI|Express|TensorFlow|PyTorch|Ollama|Kubernetes|Terraform|Docker|Git|WAL|JDBC|ORM|ACID|RAG|MinerU|PaddleOCR|LightRAG|Docling)\b/g);
     for (const tech of [...new Set(techNames || [])]) {
       if (!facts.some((f) => f.content.includes(tech))) {
         facts.push({
@@ -361,10 +460,10 @@ function heuristicExtract(
     }
   }
 
-  // Dedup
+  // Dedup — use first 80 chars as fingerprint
   const seen = new Set<string>();
   return facts.filter((f) => {
-    const key = f.content.slice(0, 60);
+    const key = f.content.slice(0, 80);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -525,17 +624,31 @@ function createCamStatsTool(store: CamMemoryStore): any {
 }
 
 // ============================================================
-// Hook — just recall, no instructions
+// Hook — cache user message + recall wiki knowledge
 // ============================================================
 
 function handleBeforePromptBuild(
   config: ReturnType<typeof resolveConfig>,
   engine: CamContextEngine,
+  store: CamMemoryStore,
 ): (event: any, ctx: any) => Promise<{ prependSystemContext?: string; prependContext?: string }> {
   return async (event, ctx) => {
+    // Cache latest user message from session messages
+    if (event.messages && Array.isArray(event.messages)) {
+      for (let i = event.messages.length - 1; i >= 0; i--) {
+        const msg = event.messages[i];
+        if (msg && msg.role === "user" && msg.content) {
+          const text = typeof msg.content === "string" ? msg.content : "";
+          if (text.trim().length > 5) {
+            engine.pendingUserMsg = text;
+            break;
+          }
+        }
+      }
+    }
+
     if (!config.injectOnPrompt) return {};
     try {
-      const store = engine.getStore();
       const stats = store.getStats();
       const totalPages = stats.totalPages as number;
       if (totalPages === 0) return {};
@@ -592,16 +705,20 @@ const camPlugin = {
     const engine = new CamContextEngine(config);
     const store = engine.getStore();
 
-    // ── Hook 1: cache user message ──
+    // ── Hook 1: message_received → cache user message (fires early for all channels) ──
     api.on("message_received", (event: any) => {
       if (typeof event.content === "string" && event.content.trim().length > 5) {
-        engine.pendingUserMsg = event.content;
+        setPendingUserMsg(event.content);
+        console.log(`[cam-hook] message_received: "${event.content.slice(0, 80)}..."`);
       }
     });
 
-    // ── Hook 2: extract knowledge from agent's LLM response ──
+    // ── Hook 2: before_prompt_build → recall wiki knowledge ──
+    api.on("before_prompt_build", handleBeforePromptBuild(config, engine, store));
+
+    // ── Hook 3: llm_output → extract knowledge from agent response ──
     api.on("llm_output", (event: any, ctx: any) => {
-      const userMsg = engine.pendingUserMsg || "";
+      const userMsg = getPendingUserMsg();
 
       // Get agent response text from assistantTexts
       let agentText = "";
@@ -612,20 +729,31 @@ const camPlugin = {
       if (!agentText || agentText.length < 50) return;
 
       const agentId = ctx?.agentId || engine.getAgentId() || "unknown";
-      const sessionId = ctx?.sessionId || event.sessionId || "llm-output";
 
       console.log(`[cam-extract] llm_output: agent response ${agentText.length} chars, model=${event.model || "?"}, agent=${agentId}`);
+      console.log(`[cam-extract] user message: "${userMsg.slice(0, 100)}${userMsg.length > 100 ? "..." : ""}"`);
 
       // Store raw conversation
       store.storeRawConversation(
         userMsg || "(unknown)",
         agentText.slice(0, 2000),
         agentId,
-        sessionId,
+        ctx?.sessionId || event.sessionId || "llm-output",
       );
 
-      // Heuristic extraction
-      const facts = heuristicExtract(userMsg, agentText);
+      // Heuristic extraction — skip if user message looks like system metadata
+      const looksLikeSystemMsg = userMsg.includes("untrusted metadata") ||
+        userMsg.includes("Conversation info") ||
+        userMsg.startsWith("Conversation");
+
+      let facts: Array<{ type: "concept" | "entity" | "synthesis"; content: string }> = [];
+      if (!looksLikeSystemMsg && userMsg.length > 5) {
+        facts = heuristicExtract(userMsg, agentText);
+      } else {
+        // Still try to extract from agent response alone (no user context)
+        facts = heuristicExtract("(technical discussion)", agentText);
+      }
+
       for (const fact of facts) {
         const saved = store.storeFact({
           name: fact.content.slice(0, 80),
@@ -644,11 +772,9 @@ const camPlugin = {
         console.log(`[cam-extract] Extracted ${facts.length} facts from agent response`);
       }
 
-      engine.pendingUserMsg = "";
+      // Clear after use
+      clearPendingUserMsg();
     });
-
-    // ── Hook 3: recall wiki knowledge before prompt build ──
-    api.on("before_prompt_build", handleBeforePromptBuild(config, engine));
 
     // ── ContextEngine (registered but not active unless slot = "cam") ──
     api.registerContextEngine("cam", () => engine);
