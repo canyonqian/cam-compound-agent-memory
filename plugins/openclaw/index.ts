@@ -297,8 +297,8 @@ class CamMemoryStore {
 // ============================================================
 
 /**
- * Strip agent's internal thinking/meta-commentary from the response.
- * Removes: "Let me search...", "我来看一下", "好的我来帮你", etc.
+ * Strip agent's internal thinking/meta-commentary/cron logs from the response.
+ * Removes: "Let me search...", "我来看一下", cron execution traces, system metadata, NO_REPLY.
  * Keeps: actual knowledge, explanations, comparisons, technical content.
  */
 function stripAgentThinking(text: string): string {
@@ -308,22 +308,67 @@ function stripAgentThinking(text: string): string {
 
   for (const line of lines) {
     const trimmed = line.trim();
-    // Skip thinking lines at the beginning
+
+    // ── Skip system metadata blocks (JSON) ──
+    if (trimmed.startsWith("```json") || (trimmed.startsWith("{") && trimmed.includes("message_id"))) continue;
+    if (trimmed.includes("untrusted metadata")) continue;
+    if (/^ou_[a-f0-9]{10,}$/.test(trimmed)) continue; // standalone Feishu user ID
+
+    // ── Skip cron execution traces ──
+    const cronPatterns = [
+      /cron fired at/i,
+      /quiet hours/i,
+      /technically outside quiet hours/i,
+      /in human terms/i,
+      /user (is )?(definitely )?sleep/i,
+      /I've been deferring/i,
+      /deferred send/i,
+      /Internal handling complete/i,
+      /NO_REPLY/,
+      /^Internal handling/i,
+      /\.+ consecutive defer/i,
+      /accumulated reports/i,
+      /next cron will execute/i,
+      /when (quiet hours end|user wakes)/i,
+    ];
+    if (cronPatterns.some((p) => p.test(trimmed))) continue;
+
+    // ── Skip mem0/storage execution traces ──
+    const storagePatterns = [
+      /mem0 storage (completed|done)/i,
+      /storing in mem0/i,
+      /stored in mem0/i,
+      /stored .*memory/i,
+      /exit code 0.*just terminal/i,
+      /JSON parsing error.*just terminal/i,
+      /^Mem0/i,
+      /^Good search results/i,
+      /^Web search is working/i,
+      /search for what's new/i,
+      /Let me (search|execute|handle|compile|analyze|store|fetch)/i,
+      /^(Executing|Search|Searching)/i,
+    ];
+    if (storagePatterns.some((p) => p.test(trimmed))) continue;
+
+    // ── Skip leading thinking lines ──
     if (!pastThinking) {
       const thinkingPatterns = [
-        /^(好的|好的，|好的!|好的！|明白|收到|没问题|让我|我来|我来查|我来搜索|我来看看|我来找)/i,
+        /^(好的|好的，|好的!|好的！|明白|收到|没问题|让我|我来|我来查|我来搜索|我来看看|我来找|已学习完毕)/i,
         /^(let me|i'll|i will|sure|ok|of course)/i,
         /^(fetching|searching|looking up|checking|analyzing)/i,
         /^(搜索|查找|看看|分析一下|帮你|为你)/i,
         /^已存入.*memory/i,
         /^这个模式.*很有参考价值/i,
+        /^(找到|找到了)/i,
+        /^(Excellent|Great|Perfect|Done|完成)\b/i,
+        /^(Note:|However, I should)/i,
       ];
       if (thinkingPatterns.some((p) => p.test(trimmed))) continue;
       if (trimmed === "" && !pastThinking) continue;
       pastThinking = true;
     }
 
-    // Skip trailing meta-commentary
+    // ── Skip trailing meta-commentary ──
     const trailingPatterns = [
       /^这个模式对于.*很有参考价值/i,
       /^如果你需要/i,
@@ -331,6 +376,11 @@ function stripAgentThinking(text: string): string {
       /^以上/i,
       /^总结[：:]/i,
       /^已存入.*memory/i,
+      /^要我.*研究.*吗/i,
+      /^要我帮你/i,
+      /让我存到记忆里/i,
+      /\.+ 要我.*吗？$/i,
+      /^Let me (analyze|compile|search|store)/i,
     ];
     if (trailingPatterns.some((p) => p.test(trimmed))) continue;
 
@@ -344,8 +394,11 @@ function stripAgentThinking(text: string): string {
  * Clean markdown for wiki storage — preserve structure, remove noise.
  */
 function cleanMarkdown(text: string): string {
+  // Remove JSON code blocks (system metadata, config dumps)
+  let out = text.replace(/```json[\s\S]*?```/g, "");
+
   // Collapse code blocks into readable form (truncate very long ones)
-  let out = text.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
     const lines = code.trim().split("\n").slice(0, 15); // max 15 lines
     return code.length > 300 ? lines.join("\n") + "\n[...]" : code;
   });
@@ -368,6 +421,10 @@ function cleanMarkdown(text: string): string {
   // Simplify links: keep text, remove URLs
   out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
 
+  // Remove orphan Feishu IDs (ou_xxx, om_xxx)
+  out = out.replace(/ou_[a-f0-9]{20,}/g, "");
+  out = out.replace(/om_[a-f0-9]{20,}/g, "");
+
   // Collapse excessive blank lines
   out = out.replace(/\n{3,}/g, "\n\n");
 
@@ -382,11 +439,27 @@ function extractTopic(response: string): string {
   const headerMatch = response.match(/^#{1,3}\s+(.+)$/m);
   if (headerMatch) {
     const topic = headerMatch[1].trim();
-    if (topic.length > 3 && topic.length < 80) return topic;
+    // Reject system metadata or cron noise as topics
+    if (topic.length > 3 && topic.length < 80 &&
+        !topic.includes("untrusted metadata") &&
+        !topic.includes("Conversation info") &&
+        !topic.toLowerCase().includes("cron fired") &&
+        !topic.toLowerCase().includes("this is the daily") &&
+        !topic.startsWith("```")) {
+      return topic;
+    }
   }
-  // Try to find a key term from the first non-empty line
-  const firstLine = response.split("\n").find((l) => l.trim().length > 5);
-  if (firstLine) return firstLine.trim().slice(0, 60);
+  // Try to find a key term from the first non-empty substantive line
+  const lines = response.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length < 5) continue;
+    // Skip thinking, metadata, and cron lines
+    if (/^(let me|好的|让我|找到|找到了|搜索|Executing|Search|The AI frontier|This is the daily|Mem0|Good search|Quiet hours|cron fired|Internal|NO_REPLY|Done|完成|Source Question)/i.test(trimmed)) continue;
+    if (trimmed.startsWith("```")) continue;
+    if (trimmed.startsWith("{") || trimmed.includes("untrusted metadata")) continue;
+    return trimmed.slice(0, 60);
+  }
   return "unknown";
 }
 
@@ -405,6 +478,23 @@ function heuristicExtract(
   if (greetingPatterns.some((p) => p.test(agentResponse.trim()))) return facts;
   if (agentResponse.trim().length < 100) return facts;
 
+  // Early rejection: cron execution logs, internal status reports, pure NO_REPLY
+  const cronRejection = [
+    /cron fired at/i,
+    /Internal handling complete/i,
+    /NO_REPLY/i,
+    /Mem0 storage completed/i,
+    /Quiet hours.*UTC/i,
+    /I've been deferring since/i,
+    /This is the daily/i,
+    /the user is definitely sleeping/i,
+    /accumulated reports when user wakes/i,
+  ];
+  // Only reject if the majority of the response is cron/internal stuff
+  const hasCronContent = cronRejection.some((p) => p.test(agentResponse));
+  const hasSubstantiveContent = /原理|机制|架构|对比|区别|vs\.?|技术|实现|配置|建议|分析|principle|mechanism|architecture|comparison|solution|configuration/i.test(agentResponse);
+  if (hasCronContent && !hasSubstantiveContent) return facts;
+
   // Step 1: Strip agent thinking/meta-commentary
   const knowledgeText = stripAgentThinking(agentResponse);
 
@@ -413,7 +503,11 @@ function heuristicExtract(
 
   if (cleanText.length < 50) return facts;
 
+  // After cleaning, check if anything substantive remains
+  if (cleanText.toLowerCase().includes("untrusted metadata") || cleanText.toLowerCase().includes("conversation info")) return facts;
+
   const topic = extractTopic(agentResponse);
+  if (topic === "unknown" || topic.length < 3) return facts;
 
   // 1. Technical explanation → concept
   const explanationSignals = [
@@ -422,28 +516,34 @@ function heuristicExtract(
   ];
   const hasExplanation = explanationSignals.some((p) => p.test(agentResponse));
 
-  if (hasExplanation && cleanText.length > 80) {
-    const content = `Topic: ${topic}\n\nSource Question: ${userMessage || "(technical discussion)"}\n\n${cleanText.slice(0, 2000)}`;
-    facts.push({ type: "concept", content });
-  }
-
   // 2. Comparison/contrast → synthesis
   const comparisonSignals = [
     /vs\.?|对比|区别|相比|不同于|与.*不同|差异|优劣|权衡|trade.?off|比较/i,
   ];
-  if (comparisonSignals.some((p) => p.test(agentResponse)) && cleanText.length > 100) {
-    const comparisonContent = `Topic: ${topic}\n\nSource Question: ${userMessage || "(comparison)"}\n\n${cleanText.slice(0, 2000)}`;
-    facts.push({ type: "synthesis", content: comparisonContent });
-  }
 
   // 3. Solution/steps → synthesis
   const solutionSignals = [
     /解决方案|解决方法|修复方法|步骤|第一步|首先.*然后|最佳实践|配置建议/,
     /to fix|solution|step 1|first.*then|finally|workaround|best practice|configuration/i,
   ];
-  if (solutionSignals.some((p) => p.test(agentResponse)) && cleanText.length > 100) {
-    const solutionContent = `Topic: ${topic}\n\nSource Question: ${userMessage || "(solution)"}\n\n${cleanText.slice(0, 2000)}`;
-    facts.push({ type: "synthesis", content: solutionContent });
+
+  const isComparison = comparisonSignals.some((p) => p.test(agentResponse));
+  const isSolution = solutionSignals.some((p) => p.test(agentResponse));
+
+  // Prioritize: if explanation + comparison, make synthesis (dedup)
+  if (hasExplanation && cleanText.length > 80) {
+    const content = `Topic: ${topic}\n\nSource Question: ${userMessage || "(technical discussion)"}\n\n${cleanText.slice(0, 2000)}`;
+    facts.push({ type: "concept", content });
+  }
+
+  // Only create synthesis if it's distinctly comparison or solution AND concept wasn't already created
+  if ((isComparison || isSolution) && cleanText.length > 100) {
+    const label = isComparison ? "(comparison)" : "(solution)";
+    const solutionContent = `Topic: ${topic}\n\nSource Question: ${userMessage || label}\n\n${cleanText.slice(0, 2000)}`;
+    // Dedup: skip if concept already covers this topic
+    if (!facts.some((f) => f.type === "concept" && f.content.includes(topic))) {
+      facts.push({ type: "synthesis", content: solutionContent });
+    }
   }
 
   // 4. Tech entities mentioned in technical context
@@ -755,12 +855,21 @@ const camPlugin = {
         userMsg.includes("Conversation info") ||
         userMsg.startsWith("Conversation");
 
+      // Also skip if agent response is purely internal execution log (cron, NO_REPLY, etc.)
+      const looksLikeCronLog = /cron fired at/i.test(agentText) &&
+        /Internal handling complete/i.test(agentText);
+      const looksLikeNoReply = agentText.includes("NO_REPLY") &&
+        !/原理|机制|架构|技术|principle|mechanism|architecture/i.test(agentText);
+
       let facts: Array<{ type: "concept" | "entity" | "synthesis"; content: string }> = [];
-      if (!looksLikeSystemMsg && userMsg.length > 5) {
-        facts = heuristicExtract(userMsg, agentText);
+      if (looksLikeCronLog || looksLikeNoReply) {
+        console.log(`[cam-extract] Skipping: response is cron/NO_REPLY log, no substantive knowledge`);
       } else {
-        // Still try to extract from agent response alone (no user context)
-        facts = heuristicExtract("(technical discussion)", agentText);
+        if (!looksLikeSystemMsg && userMsg.length > 5) {
+          facts = heuristicExtract(userMsg, agentText);
+        } else {
+          facts = heuristicExtract("(technical discussion)", agentText);
+        }
       }
 
       for (const fact of facts) {
